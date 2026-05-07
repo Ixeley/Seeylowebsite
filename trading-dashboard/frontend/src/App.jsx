@@ -23,6 +23,7 @@ const DEFAULT_SETTINGS = {
 export default function App() {
   const [settings,       setSettings]       = useState(DEFAULT_SETTINGS);
   const [mode,           setMode]           = useState('paper'); // 'paper' | 'live'
+  const [accountInfo,    setAccountInfo]    = useState(null);   // { account, accounts } when live
   const [connecting,     setConnecting]     = useState(false);
   const [connectError,   setConnectError]   = useState(null);
   const [ready,          setReady]          = useState(false);   // backend session initialised
@@ -58,6 +59,11 @@ export default function App() {
       case 'mode':
         setMode(msg.mode);
         setReady(true);
+        if (msg.mode === 'paper') setAccountInfo(null);
+        break;
+
+      case 'accountInfo':
+        setAccountInfo(msg.data);
         break;
 
       case 'fill':
@@ -100,7 +106,8 @@ export default function App() {
       .then(data => {
         if (data.ready) {
           setMode(data.mode);
-          if (data.state) setRiskState(data.state);
+          if (data.state)       setRiskState(data.state);
+          if (data.accountInfo) setAccountInfo(data.accountInfo);
           setReady(true);
         }
       })
@@ -131,7 +138,9 @@ export default function App() {
 
       setMode(data.mode);
       setReady(true);
-      if (newSettings) setSettings(newSettings);
+      if (newSettings)        setSettings(newSettings);
+      if (data.accountInfo)  setAccountInfo(data.accountInfo);
+      if (data.mode === 'paper') setAccountInfo(null);
       addStatus({ level: 'success', message: data.message });
     } catch (err) {
       setConnectError(err.message);
@@ -161,6 +170,7 @@ export default function App() {
       wsConnected={wsConnected}
       ready={ready}
       mode={mode}
+      accountInfo={accountInfo}
       connecting={connecting}
       connectError={connectError}
       onConnect={handleConnect}

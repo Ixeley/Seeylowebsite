@@ -44,6 +44,7 @@ let activeClient     = null;  // PaperClient | TradovateClient
 let riskEngine       = null;
 let strategy         = null;
 let currentMode      = 'paper'; // 'paper' | 'live'
+let accountInfo      = null;   // { account: {id,name}, accounts: [{…}] } — populated when live
 const mlAdvisor      = new MLAdvisor();
 const newsService    = new NewsService();
 let autoTradingActive = false;
@@ -55,7 +56,8 @@ wss.on('connection', (ws) => {
   console.log('[WS] Client connected. Total:', wsClients.size);
 
   // Send full state immediately so the UI is never stale on reconnect
-  if (riskEngine) safeSend(ws, { type: 'riskState', data: riskEngine.getState() });
+  if (riskEngine)   safeSend(ws, { type: 'riskState',   data: riskEngine.getState() });
+  if (accountInfo)  safeSend(ws, { type: 'accountInfo', data: accountInfo });
   safeSend(ws, { type: 'mode',        mode: currentMode });
   safeSend(ws, { type: 'autoTrading', active: autoTradingActive });
 
@@ -92,9 +94,22 @@ async function initSession(mode, credentials, settings) {
 
   await activeClient.connect();
 
-  riskEngine = new RiskEngine(settings || DEFAULT_SETTINGS);
-  strategy   = new Strategy(activeClient, riskEngine);
+  riskEngine  = new RiskEngine(settings || DEFAULT_SETTINGS);
+  strategy    = new Strategy(activeClient, riskEngine);
   currentMode = mode;
+  accountInfo = null; // reset; populated below for live sessions
+
+  // Account info — emitted by TradovateClient after successful auth
+  activeClient.on('accountInfo', (info) => {
+    accountInfo = info;
+    broadcast({ type: 'accountInfo', data: info });
+    console.log(`[Server] Account: ${info.account?.name}`);
+  });
+
+  // Real-time balance updates from Tradovate cash-balance events
+  activeClient.on('balanceUpdate', (bal) => {
+    broadcast({ type: 'balanceUpdate', data: bal });
+  });
 
   // Price tick → broadcast + optional auto-trade
   activeClient.on('price', (priceData) => {
@@ -141,8 +156,9 @@ app.post('/api/connect', async (req, res) => {
     res.json({
       success:  true,
       mode,
+      accountInfo: accountInfo ?? null,
       message:  mode === 'live'
-        ? `✅ Connected to live Tradovate — ${credentials.username}`
+        ? `✅ Live — ${accountInfo?.account?.name || credentials.username}`
         : credentials.finnhubKey
           ? '📈 Paper trading — real prices via Finnhub'
           : '📄 Paper trading — simulated prices (TradingView chart shows real market)',
@@ -150,6 +166,29 @@ app.post('/api/connect', async (req, res) => {
   } catch (err) {
     console.error('[/api/connect]', err);
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ─── POST /api/test-connection ───────────────────────────────────────────────
+// Validates Tradovate credentials and returns account list WITHOUT changing
+// the active session.  Used by the Go Live modal before the user commits.
+app.post('/api/test-connection', async (req, res) => {
+  try {
+    const { credentials = {} } = req.body;
+    if (!credentials.username) {
+      return res.status(400).json({ success: false, error: 'Username is required' });
+    }
+
+    const result = await TradovateClient.testAuthenticate(credentials);
+    res.json({
+      success:  true,
+      accounts: result.accounts,
+      userId:   result.userId,
+      message:  `✅ Authenticated — found ${result.accounts.length} account(s)`,
+    });
+  } catch (err) {
+    console.error('[/api/test-connection]', err);
+    res.status(401).json({ success: false, error: err.message });
   }
 });
 
@@ -207,9 +246,10 @@ app.get('/api/ml-stats', (_req, res) => res.json(mlAdvisor.getStats()));
 // Quick health-check / mode probe used by the frontend on mount
 app.get('/api/status', (_req, res) => {
   res.json({
-    ready:  !!activeClient,
-    mode:   currentMode,
-    state:  riskEngine?.getState() ?? null,
+    ready:       !!activeClient,
+    mode:        currentMode,
+    state:       riskEngine?.getState() ?? null,
+    accountInfo: accountInfo ?? null,
   });
 });
 

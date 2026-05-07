@@ -1,78 +1,139 @@
 /**
- * TradovateClient
+ * TradovateClient — real Tradovate API integration.
  *
- * Two modes:
- *  SIMULATION  — no credentials needed. Generates realistic tick-level price
- *                data using a mean-reverting random walk and simulates fills
- *                with slippage and position lifecycle.
- *  LIVE/DEMO   — authenticates against the real Tradovate REST + WebSocket APIs.
- *                Replace the isSimulated flag by passing real credentials.
+ * Key API facts (these are the bugs that existed before):
  *
- * The public interface is identical in both modes so the rest of the system
- * never needs to know which one is active.
+ *  1. mdAccessToken  — the auth response returns TWO tokens:
+ *     - accessToken   → trading WebSocket (live.tradovateapi.com)
+ *     - mdAccessToken → market-data WebSocket (md.tradovateapi.com)
+ *     Using accessToken for both causes silent auth failures on the MD socket.
+ *
+ *  2. CID must be an integer, not a string.
+ *     Tradovate rejects auth if cid is "12345" instead of 12345.
+ *
+ *  3. Heartbeat / keepalive:
+ *     SockJS 'h' frames are one-way heartbeats — no response needed.
+ *     BUT the Tradovate application layer requires a `server/ping` call
+ *     every ~2.5 minutes or the server closes the socket.
+ *
+ *  4. Fill events come as `{ e:'props', d:{ entityType:'executionReport', entity:{…} } }`
+ *     not as `{ e:'fill', … }`.  The old code never caught real fills.
+ *
+ *  5. Cash-balance updates (realised P&L) come via entityType:'cashBalance'.
+ *
+ * Public method added: static authenticate(credentials) — used by the
+ * /api/test-connection endpoint to validate creds without starting a session.
  */
 const EventEmitter = require('events');
 const WebSocket    = require('ws');
 const fetch        = require('node-fetch');
 
-// Official Tradovate endpoint URLs
-const TV_AUTH_LIVE = 'https://live.tradovateapi.com/v1/auth/accesstokenrequest';
-const TV_AUTH_DEMO = 'https://demo.tradovateapi.com/v1/auth/accesstokenrequest';
-const TV_WS_LIVE   = 'wss://live.tradovateapi.com/v1/websocket';
-const TV_WS_DEMO   = 'wss://demo.tradovateapi.com/v1/websocket';
-const TV_MD_WS     = 'wss://md.tradovateapi.com/v1/websocket'; // market data
+const TV_AUTH_LIVE  = 'https://live.tradovateapi.com/v1/auth/accesstokenrequest';
+const TV_AUTH_DEMO  = 'https://demo.tradovateapi.com/v1/auth/accesstokenrequest';
+const TV_RENEW_LIVE = 'https://live.tradovateapi.com/v1/auth/renewaccesstoken';
+const TV_RENEW_DEMO = 'https://demo.tradovateapi.com/v1/auth/renewaccesstoken';
+const TV_WS_LIVE    = 'wss://live.tradovateapi.com/v1/websocket';
+const TV_WS_DEMO    = 'wss://demo.tradovateapi.com/v1/websocket';
+const TV_MD_WS      = 'wss://md.tradovateapi.com/v1/websocket';
 
+const PING_INTERVAL_MS  = 2.5 * 60 * 1000; // 2.5 min — keeps WS alive
+const TOKEN_RENEW_MS    = 80 * 60 * 1000;   // renew token every 80 min (expires at 90)
+
+// ─── Static helper — used by /api/test-connection ────────────────────────────
+async function testAuthenticate(credentials) {
+  const url  = credentials.demo ? TV_AUTH_DEMO : TV_AUTH_LIVE;
+  const resp = await fetch(url, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name:       credentials.username,
+      password:   credentials.password,
+      appId:      credentials.appId      || 'PropTraderDashboard',
+      appVersion: credentials.appVersion || '1.0',
+      cid:        parseInt(credentials.cid, 10),  // MUST be integer
+      sec:        credentials.sec,
+    }),
+  });
+
+  const data = await resp.json();
+  if (data.errorText) throw new Error(data.errorText);
+  if (!data.accessToken) throw new Error('No access token returned — check credentials');
+
+  return {
+    accessToken:   data.accessToken,
+    mdAccessToken: data.mdAccessToken,
+    userId:        data.userId,
+    accounts:      (data.accounts || []).map(a => ({
+      id:          a.id,
+      name:        a.name,
+      active:      a.active,
+      accountType: a.accountType,
+      // cashBalance comes via WS; include if present in auth response
+      balance:     a.balance ?? null,
+    })),
+  };
+}
+
+// ─── Client class ─────────────────────────────────────────────────────────────
 class TradovateClient extends EventEmitter {
   constructor(credentials = {}) {
     super();
 
-    // If no username supplied we run the simulator — safe default for dev/demo
-    this.isSimulated = !credentials.username;
-    this.credentials = credentials;
+    this.credentials   = credentials;
+    this.isSimulated   = !credentials.username;
 
-    // Internal state
-    this.accessToken       = null;
-    this.ws                = null; // Trading WebSocket
-    this.mdWs              = null; // Market-data WebSocket
-    this.positions         = new Map(); // id → position object
-    this.priceHistory      = []; // rolling array of close prices for SMA
-    this.currentPrice      = 5200; // seed price (ES contract ballpark)
-    this.symbol            = credentials.symbol || 'ESM4';
-    this.reqId             = 1;
+    // Auth state
+    this.accessToken   = null;
+    this.mdAccessToken = null;  // separate token for market-data socket
+    this.accounts      = [];
+    this.selectedAccount = null; // { id, name }
 
-    // Simulation internals
-    this._simInterval      = null;
-    this._simTrend         = 0;   // trending component (mean-reverts)
-    this._simVolatility    = 1.5; // tick-level noise
+    // Socket handles
+    this.ws    = null;
+    this.mdWs  = null;
+
+    // Keepalive timers
+    this._pingTimer  = null;
+    this._renewTimer = null;
+
+    // Price / position state
+    this.priceHistory  = [];
+    this.positions     = new Map();
+    this.currentPrice  = 5_250;
+    this.symbol        = credentials.symbol || 'ESM4';
+    this.reqId         = 1;
+
+    // Simulation-only
+    this._simInterval = null;
+    this._simTrend    = 0;
+    this._simVol      = 1.5;
   }
 
-  // ─── Public API ─────────────────────────────────────────────────────────────
+  // ─── Public ──────────────────────────────────────────────────────────────────
 
   async connect() {
     if (this.isSimulated) {
-      console.log('[TradovateClient] 🟡 SIMULATION mode — no real orders will be placed');
+      console.log('[TradovateClient] 🟡 SIMULATION mode');
       this._startSimulation();
       return;
     }
     await this._authenticate();
     this._connectTradingWS();
     this._connectMarketDataWS();
+    this._scheduleTokenRenewal();
   }
 
-  /**
-   * Place an order.  In simulation, fills are synthetic.
-   * In live mode this sends the order to the Tradovate WebSocket.
-   */
-  async placeOrder({ symbol, action, quantity, orderType = 'Market', stopLoss, takeProfit }) {
+  async placeOrder({ symbol, action, quantity, stopLoss, takeProfit }) {
     if (this.isSimulated) {
       return this._simulatePlaceOrder({ symbol, action, quantity, stopLoss, takeProfit });
     }
 
-    // ── Real Tradovate order placement ──
-    // Tradovate WebSocket frame format:  "<id>\n<endpoint>\n\n<json>"
+    if (!this.selectedAccount) throw new Error('No account selected');
+
+    // Market order
     this._wsSend('order/placeorder', {
-      accountSpec: this.credentials.accountSpec,
-      accountId:   this.credentials.accountId,
+      accountSpec: this.selectedAccount.name,
+      accountId:   this.selectedAccount.id,
       action:      action === 'buy' ? 'Buy' : 'Sell',
       symbol,
       orderQty:    quantity,
@@ -80,11 +141,11 @@ class TradovateClient extends EventEmitter {
       isAutomated: true,
     });
 
-    // Attach bracket orders (OCO stop + limit) if provided
+    // OCO bracket (stop-loss + take-profit)
     if (stopLoss || takeProfit) {
       this._wsSend('order/placeoso', {
-        accountSpec: this.credentials.accountSpec,
-        accountId:   this.credentials.accountId,
+        accountSpec: this.selectedAccount.name,
+        accountId:   this.selectedAccount.id,
         action:      action === 'buy' ? 'Buy' : 'Sell',
         symbol,
         orderQty:    quantity,
@@ -94,96 +155,149 @@ class TradovateClient extends EventEmitter {
     }
   }
 
-  getPriceHistory() { return this.priceHistory; }
-  getPositions()    { return Array.from(this.positions.values()); }
+  getPriceHistory()  { return this.priceHistory; }
+  getPositions()     { return Array.from(this.positions.values()); }
+  getAccountInfo()   { return this.selectedAccount; }
 
   disconnect() {
     clearInterval(this._simInterval);
-    this.ws  && this.ws.close();
-    this.mdWs && this.mdWs.close();
+    clearInterval(this._pingTimer);
+    clearTimeout(this._renewTimer);
+    this.ws?.removeAllListeners();   this.ws?.close();
+    this.mdWs?.removeAllListeners(); this.mdWs?.close();
   }
 
-  // ─── Live: Authentication ────────────────────────────────────────────────────
+  // ─── Authentication ───────────────────────────────────────────────────────────
 
   async _authenticate() {
-    const url = this.credentials.demo ? TV_AUTH_DEMO : TV_AUTH_LIVE;
+    const result = await testAuthenticate(this.credentials);
 
-    const resp = await fetch(url, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        name:       this.credentials.username,
-        password:   this.credentials.password,
-        appId:      this.credentials.appId      || 'MyTradingApp',
-        appVersion: this.credentials.appVersion || '1.0',
-        cid:        this.credentials.cid,
-        sec:        this.credentials.sec,
-      }),
-    });
+    this.accessToken   = result.accessToken;
+    this.mdAccessToken = result.mdAccessToken; // ← FIX: separate MD token
+    this.accounts      = result.accounts;
 
-    const data = await resp.json();
-    if (data.errorText) throw new Error(`Tradovate auth error: ${data.errorText}`);
+    // Honour an explicit accountId, otherwise use the first active account
+    const preferred = this.credentials.accountId
+      ? result.accounts.find(a => a.id === parseInt(this.credentials.accountId, 10))
+      : null;
+    this.selectedAccount = preferred || result.accounts.find(a => a.active) || result.accounts[0];
 
-    this.accessToken   = data.accessToken;
-    this.credentials.accountId   = data.accounts?.[0]?.id;
-    this.credentials.accountSpec = data.accounts?.[0]?.name;
-    console.log('[TradovateClient] ✅ Authenticated — account:', this.credentials.accountSpec);
+    console.log(`[TradovateClient] ✅ Authenticated — account: ${this.selectedAccount?.name}`);
+    this.emit('accountInfo', { account: this.selectedAccount, accounts: this.accounts });
   }
 
-  // ─── Live: Trading WebSocket ─────────────────────────────────────────────────
+  async _renewToken() {
+    try {
+      const url  = this.credentials.demo ? TV_RENEW_DEMO : TV_RENEW_LIVE;
+      const resp = await fetch(url, {
+        method:  'GET',
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+      });
+      const data = await resp.json();
+      if (data.accessToken) {
+        this.accessToken   = data.accessToken;
+        this.mdAccessToken = data.mdAccessToken || this.mdAccessToken;
+        console.log('[TradovateClient] 🔄 Token renewed');
+      }
+    } catch (e) {
+      console.error('[TradovateClient] Token renewal failed:', e.message);
+    }
+  }
+
+  _scheduleTokenRenewal() {
+    this._renewTimer = setInterval(() => this._renewToken(), TOKEN_RENEW_MS);
+  }
+
+  // ─── Trading WebSocket ────────────────────────────────────────────────────────
 
   _connectTradingWS() {
     const url = this.credentials.demo ? TV_WS_DEMO : TV_WS_LIVE;
-    this.ws = new WebSocket(url);
+    this.ws   = new WebSocket(url);
 
     this.ws.on('open', () => {
-      // First message must be authorise, then subscribe to entity streams
       this._wsSend('authorize', { token: this.accessToken });
+      // Subscribe to live entity streams for this account
       this._wsSend('account/list', {});
-      this._wsSend('order/list', {});
+      this._wsSend('order/list',   {});
       this._wsSend('position/list', {});
+      this._wsSend('cashBalance/list', {});
+      // Keepalive ping every 2.5 min
+      this._pingTimer = setInterval(() => this._wsSend('server/ping', {}), PING_INTERVAL_MS);
     });
 
     this.ws.on('message', (raw) => this._handleTradingFrame(raw.toString()));
-
-    this.ws.on('error', (e) => console.error('[TradovateClient WS]', e.message));
-    this.ws.on('close', () => {
+    this.ws.on('error',   (e)  => console.error('[TV WS]', e.message));
+    this.ws.on('close',   ()   => {
+      clearInterval(this._pingTimer);
       console.warn('[TradovateClient] Trading WS closed — reconnecting in 5s');
-      setTimeout(() => this._connectTradingWS(), 5000);
+      setTimeout(() => this._connectTradingWS(), 5_000);
     });
   }
 
   _handleTradingFrame(raw) {
-    if (raw === 'o' || raw === 'h') return; // SockJS open / heartbeat
+    // SockJS frame types: 'o'=open, 'h'=heartbeat (ignore, no response needed),
+    // 'a[...]'=message array, 'c[...]'=close
+    if (raw === 'o' || raw === 'h') return;
 
     try {
-      // Tradovate wraps frames in SockJS 'a[...]' arrays
       const frames = JSON.parse(raw.startsWith('a') ? raw.slice(1) : raw);
       (Array.isArray(frames) ? frames : [frames]).forEach(f => {
         const msg = typeof f === 'string' ? JSON.parse(f) : f;
         this._processTradingMessage(msg);
       });
-    } catch (_) { /* non-JSON heartbeat or unknown frame — ignore */ }
+    } catch (_) {}
   }
 
   _processTradingMessage(msg) {
-    // Fill event — order executed
-    if (msg.e === 'fill') {
-      this.emit('fill', {
-        id:        msg.d.orderId,
-        symbol:    this.symbol,
-        action:    msg.d.action === 'Buy' ? 'buy' : 'sell',
-        quantity:  msg.d.qty,
-        price:     msg.d.price,
-        pnl:       msg.d.pnl ?? null,
-        timestamp: new Date().toISOString(),
-      });
-    }
+    if (msg.e !== 'props' || !msg.d) return;
 
-    // Position update
-    if (msg.e === 'props' && msg.d?.entityType === 'position') {
-      const pos = msg.d.entity;
-      this.positions.set(pos.contractId, pos);
+    const { entityType, entity } = msg.d;
+
+    switch (entityType) {
+      // ── FIX: fills come as executionReport, not 'fill' ──────────────────────
+      case 'executionReport': {
+        const isBuy = entity.side === 'Buy';
+        this.emit('fill', {
+          id:        entity.id,
+          orderId:   entity.orderId,
+          symbol:    entity.contractId?.toString() || this.symbol,
+          action:    isBuy ? 'buy' : 'sell',
+          quantity:  entity.qty,
+          price:     entity.price,
+          pnl:       entity.realizedPL ?? null,
+          timestamp: entity.timestamp || new Date().toISOString(),
+        });
+        break;
+      }
+
+      // ── Position update (openPL for unrealised P&L) ──────────────────────────
+      case 'position': {
+        this.positions.set(entity.contractId, entity);
+        this.emit('positionUpdate', entity);
+        break;
+      }
+
+      // ── Cash balance (realised P&L, buying power) ────────────────────────────
+      case 'cashBalance': {
+        if (this.selectedAccount && entity.accountId === this.selectedAccount.id) {
+          this.emit('balanceUpdate', {
+            cashBalance: entity.cashBalance,
+            realizedPnL: entity.realizedPnL,
+            openPnL:     entity.openPnL,
+          });
+        }
+        break;
+      }
+
+      // ── Account info update ───────────────────────────────────────────────────
+      case 'account': {
+        const idx = this.accounts.findIndex(a => a.id === entity.id);
+        if (idx !== -1) this.accounts[idx] = { ...this.accounts[idx], ...entity };
+        break;
+      }
+
+      default:
+        break;
     }
   }
 
@@ -194,19 +308,23 @@ class TradovateClient extends EventEmitter {
     return id;
   }
 
-  // ─── Live: Market-Data WebSocket ─────────────────────────────────────────────
+  // ─── Market-Data WebSocket ────────────────────────────────────────────────────
 
   _connectMarketDataWS() {
     this.mdWs = new WebSocket(TV_MD_WS);
 
     this.mdWs.on('open', () => {
-      this._mdSend('authorize', { token: this.accessToken });
+      // FIX: use mdAccessToken, not accessToken
+      this._mdSend('authorize', { token: this.mdAccessToken });
       this._mdSend('md/subscribeQuote', { symbol: this.symbol });
     });
 
     this.mdWs.on('message', (raw) => this._handleMDFrame(raw.toString()));
-    this.mdWs.on('error',   (e)  => console.error('[TradovateClient MD WS]', e.message));
-    this.mdWs.on('close',   ()   => setTimeout(() => this._connectMarketDataWS(), 5000));
+    this.mdWs.on('error',   (e)  => console.error('[TV MD WS]', e.message));
+    this.mdWs.on('close',   ()   => {
+      console.warn('[TradovateClient] MD WS closed — reconnecting in 5s');
+      setTimeout(() => this._connectMarketDataWS(), 5_000);
+    });
   }
 
   _handleMDFrame(raw) {
@@ -215,9 +333,10 @@ class TradovateClient extends EventEmitter {
       const frames = JSON.parse(raw.startsWith('a') ? raw.slice(1) : raw);
       (Array.isArray(frames) ? frames : [frames]).forEach(f => {
         const msg = typeof f === 'string' ? JSON.parse(f) : f;
+        // MD subscription response contains quotes array
         if (msg.d?.quotes?.length) {
-          const q    = msg.d.quotes[0];
-          const mid  = (q.bestAsk + q.bestBid) / 2;
+          const q   = msg.d.quotes[0];
+          const mid = (q.bestAsk + q.bestBid) / 2;
           this._pushPrice(mid, q.bestBid, q.bestAsk);
         }
       });
@@ -231,105 +350,71 @@ class TradovateClient extends EventEmitter {
     return id;
   }
 
+  // ─── Price push ───────────────────────────────────────────────────────────────
+
+  _pushPrice(price, bid, ask, simulated = false) {
+    this.priceHistory.push(price);
+    if (this.priceHistory.length > 200) this.priceHistory.shift();
+    this.currentPrice = price;
+
+    this.emit('price', {
+      symbol: this.symbol, price, bid, ask,
+      timestamp: new Date().toISOString(),
+      simulated,
+    });
+  }
+
   // ─── Simulation ──────────────────────────────────────────────────────────────
 
   _startSimulation() {
     this._simInterval = setInterval(() => {
-      // Mean-reverting trend component keeps the price realistic
-      this._simTrend = this._simTrend * 0.92 + (Math.random() - 0.5) * 0.6;
-      const noise    = (Math.random() - 0.5) * this._simVolatility;
+      this._simTrend     = this._simTrend * 0.92 + (Math.random() - 0.5) * 0.6;
+      const noise        = (Math.random() - 0.5) * this._simVol;
       this.currentPrice += this._simTrend + noise;
+      this.currentPrice  = Math.max(4_800, Math.min(5_800, this.currentPrice));
 
-      // Soft clamp to ES-like range (keeps charts readable in demos)
-      this.currentPrice = Math.max(4800, Math.min(5600, this.currentPrice));
-
-      const spread = 0.25; // one tick
-      this._pushPrice(
-        this.currentPrice,
-        this.currentPrice - spread / 2,
-        this.currentPrice + spread / 2,
-        true,
-      );
-    }, 1000); // tick every second
-  }
-
-  _pushPrice(price, bid, ask, simulated = false) {
-    const priceData = {
-      symbol: this.symbol,
-      price,
-      bid,
-      ask,
-      timestamp: new Date().toISOString(),
-      simulated,
-    };
-
-    // Keep rolling 200-bar history for SMA calculations
-    this.priceHistory.push(price);
-    if (this.priceHistory.length > 200) this.priceHistory.shift();
-
-    this.emit('price', priceData);
+      const spread = 0.25;
+      this._pushPrice(this.currentPrice, this.currentPrice - spread / 2, this.currentPrice + spread / 2, true);
+    }, 1_000);
   }
 
   _simulatePlaceOrder({ symbol, action, quantity, stopLoss, takeProfit }) {
-    // Add one tick of slippage to simulate realistic market-order fills
     const slippage  = 0.25;
-    const fillPrice = action === 'buy'
-      ? this.currentPrice + slippage
-      : this.currentPrice - slippage;
+    const fillPrice = action === 'buy' ? this.currentPrice + slippage : this.currentPrice - slippage;
 
     const fill = {
-      id:         `SIM-${Date.now()}`,
-      symbol,
-      action,
-      quantity,
-      price:      fillPrice,
-      stopLoss,
-      takeProfit,
-      timestamp:  new Date().toISOString(),
-      simulated:  true,
-      status:     'filled',
+      id: `SIM-${Date.now()}`, symbol, action, quantity,
+      price: +fillPrice.toFixed(2), stopLoss, takeProfit,
+      timestamp: new Date().toISOString(), simulated: true, status: 'filled',
     };
 
     this.positions.set(fill.id, { ...fill, openPrice: fillPrice });
     this.emit('fill', fill);
-
-    // Auto-close the simulated position after a random interval so the calendar
-    // and P&L chart fill up with real-looking data during a demo session.
     this._scheduleSimClose(fill);
     return fill;
   }
 
   _scheduleSimClose(fill) {
-    // Close between 20 s and 2 min (sim time is compressed — makes demos lively)
     const delay = 20_000 + Math.random() * 100_000;
-
     setTimeout(() => {
       if (!this.positions.has(fill.id)) return;
-
-      const closePrice = this.currentPrice;
-
-      // ES futures: 1 index point = $50 per contract
       const priceDiff = fill.action === 'buy'
-        ? closePrice - fill.price
-        : fill.price - closePrice;
+        ? this.currentPrice - fill.price
+        : fill.price        - this.currentPrice;
       const pnl = priceDiff * fill.quantity * 50;
 
-      const closeFill = {
-        id:               `SIM-CLOSE-${Date.now()}`,
-        symbol:           fill.symbol,
-        action:           fill.action === 'buy' ? 'sell' : 'buy',
-        quantity:         fill.quantity,
-        price:            closePrice,
-        pnl,
-        closedPositionId: fill.id,
-        timestamp:        new Date().toISOString(),
-        simulated:        true,
-      };
-
       this.positions.delete(fill.id);
-      this.emit('fill', closeFill);
+      this.emit('fill', {
+        id: `SIM-CLOSE-${Date.now()}`, symbol: fill.symbol,
+        action: fill.action === 'buy' ? 'sell' : 'buy',
+        quantity: fill.quantity, price: +this.currentPrice.toFixed(2),
+        pnl: +pnl.toFixed(2), closedPositionId: fill.id,
+        timestamp: new Date().toISOString(), simulated: true,
+      });
     }, delay);
   }
 }
 
+// Export both the class and the standalone auth helper
+TradovateClient.testAuthenticate = testAuthenticate;
 module.exports = TradovateClient;

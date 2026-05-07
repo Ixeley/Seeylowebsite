@@ -23,12 +23,13 @@ import CalendarView      from './CalendarView';
 import AutoTrading       from './AutoTrading';
 import NewsPanel         from './NewsPanel';
 import RiskSettings      from './RiskSettings';
+import GoLiveModal       from './GoLiveModal';
 import { fmt$, fmtPrice, fmtPct, pnlColor, clamp } from '../utils/formatters';
 
 const TABS = ['Overview', 'Calendar', 'Trade Log', 'Risk Settings', 'ML Stats'];
 
 export default function TradingDashboard({
-  wsConnected, ready, mode,
+  wsConnected, ready, mode, accountInfo,
   connecting, connectError, onConnect,
   priceData, riskState, autoTrading, fills, pnlHistory, statusMessages,
   settings, onSettingsChange,
@@ -83,7 +84,7 @@ export default function TradingDashboard({
             ) : (
               <span className="flex items-center gap-1.5 text-xs bg-neon-green/15 border border-neon-green/40 text-neon-green px-2.5 py-1 rounded-full animate-pulse-slow">
                 <span className="live-dot" style={{ width: 6, height: 6 }} />
-                LIVE — TRADOVATE
+                LIVE — {accountInfo?.account?.name || 'TRADOVATE'}
               </span>
             )}
           </div>
@@ -138,8 +139,7 @@ export default function TradingDashboard({
       {showGoLive && (
         <GoLiveModal
           connecting={connecting}
-          error={connectError}
-          onConnect={(creds) => { onConnect({ credentials: creds }); setShowGoLive(false); }}
+          onConnect={(payload) => { onConnect(payload); setShowGoLive(false); }}
           onClose={() => setShowGoLive(false)}
         />
       )}
@@ -246,107 +246,6 @@ export default function TradingDashboard({
           </>
         )}
       </main>
-    </div>
-  );
-}
-
-// ─── Go Live modal ────────────────────────────────────────────────────────────
-function GoLiveModal({ connecting, error, onConnect, onClose }) {
-  const [creds, setCreds] = useState({
-    username: '', password: '', cid: '', sec: '',
-    appId: 'PropTraderDashboard', appVersion: '1.0',
-    demo: false, finnhubKey: '',
-  });
-
-  const set = (k, v) => setCreds(p => ({ ...p, [k]: v }));
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
-      <div className="neon-card w-full max-w-md space-y-4 relative scan-lines border border-neon-green/30 shadow-neon-green animate-fadeIn">
-        <div className="flex justify-between items-center">
-          <h2 className="text-neon-green text-lg font-bold text-glow-green">⚡ Go Live — Tradovate</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">✕</button>
-        </div>
-
-        <p className="text-gray-400 text-xs">
-          Enter your Tradovate API credentials. Enable <strong className="text-white">Demo</strong> to
-          trade on the Tradovate demo server without real money.
-        </p>
-
-        {/* Demo toggle */}
-        <label className="flex items-center gap-3 cursor-pointer select-none">
-          <div
-            onClick={() => set('demo', !creds.demo)}
-            className={`relative w-11 h-6 rounded-full transition-colors ${creds.demo ? 'bg-neon-cyan/40 border-neon-cyan' : 'bg-dark-500'} border`}
-          >
-            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform bg-white/90 ${creds.demo ? 'translate-x-5' : ''}`} />
-          </div>
-          <span className="text-sm text-gray-300">
-            {creds.demo
-              ? <span className="text-neon-cyan">Demo mode (paper on Tradovate servers)</span>
-              : <span className="text-neon-pink font-bold">LIVE mode — REAL MONEY</span>}
-          </span>
-        </label>
-
-        {/* Credential fields */}
-        {[
-          { key: 'username',   label: 'Username',   type: 'text',     ph: 'Tradovate username' },
-          { key: 'password',   label: 'Password',   type: 'password', ph: 'Tradovate password' },
-          { key: 'cid',        label: 'Client ID',  type: 'text',     ph: 'cid from Tradovate API app' },
-          { key: 'sec',        label: 'Secret',     type: 'password', ph: 'sec from Tradovate API app' },
-        ].map(f => (
-          <div key={f.key}>
-            <label className="text-xs text-gray-400 uppercase tracking-wide block mb-1">{f.label}</label>
-            <input
-              type={f.type}
-              value={creds[f.key]}
-              placeholder={f.ph}
-              onChange={e => set(f.key, e.target.value)}
-              className="w-full bg-dark-700 border border-dark-400 rounded-lg px-3 py-2 text-sm text-white
-                         placeholder-gray-600 focus:outline-none focus:border-neon-cyan transition-colors"
-            />
-          </div>
-        ))}
-
-        {/* Optional Finnhub key for real paper prices */}
-        <div className="border-t border-dark-500 pt-3">
-          <label className="text-xs text-gray-400 uppercase tracking-wide block mb-1">
-            Finnhub Key <span className="text-gray-600 normal-case">(optional — real prices in paper mode)</span>
-          </label>
-          <input
-            type="text"
-            value={creds.finnhubKey}
-            placeholder="Free key from finnhub.io — omit to use simulated prices"
-            onChange={e => set('finnhubKey', e.target.value)}
-            className="w-full bg-dark-700 border border-dark-400 rounded-lg px-3 py-2 text-sm text-white
-                       placeholder-gray-600 focus:outline-none focus:border-neon-cyan transition-colors"
-          />
-        </div>
-
-        {error && (
-          <div className="text-neon-pink text-sm bg-neon-pink/10 rounded-lg px-3 py-2">{error}</div>
-        )}
-
-        <div className="flex gap-3">
-          <button
-            onClick={onClose}
-            className="flex-1 py-2.5 rounded-lg border border-dark-400 text-gray-400 hover:text-white text-sm transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => onConnect(creds)}
-            disabled={connecting || !creds.username}
-            className={`flex-1 py-2.5 rounded-lg font-bold text-sm transition-all
-              ${creds.demo
-                ? 'bg-neon-cyan/20 border border-neon-cyan/60 text-neon-cyan hover:shadow-neon-cyan'
-                : 'bg-neon-green/20 border border-neon-green/60 text-neon-green hover:shadow-neon-green'
-              } disabled:opacity-40`}
-          >
-            {connecting ? '⏳ Connecting…' : creds.demo ? '🔵 Connect Demo' : '🔴 Connect Live'}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
