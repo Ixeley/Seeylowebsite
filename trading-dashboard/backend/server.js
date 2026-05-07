@@ -1,113 +1,151 @@
 /**
- * Trading Dashboard Backend - Main Server
- * Express + WebSocket server that bridges the frontend to Tradovate (real or simulated)
- * and enforces all risk rules before any order is placed.
+ * Trading Dashboard Backend — Main Server
+ *
+ * Mode lifecycle:
+ *  BOOT        → paper trading starts automatically (PaperClient)
+ *  POST /api/connect  { paper: true }   → re-init paper (change settings)
+ *  POST /api/connect  { credentials: { username, … } } → upgrade to live Tradovate
+ *
+ * This means the frontend never shows a blocking splash screen.
+ * The dashboard is immediately usable in paper mode.
  */
 const express = require('express');
-const http = require('http');
+const http    = require('http');
 const WebSocket = require('ws');
-const cors = require('cors');
+const cors    = require('cors');
 
 const { initDatabase, recordTrade, getTrades, getDailyStats } = require('./database');
 const TradovateClient = require('./tradovate-client');
-const RiskEngine = require('./risk-engine');
-const Strategy = require('./strategy');
-const MLAdvisor = require('./ml-advisor');
-const NewsService = require('./news-service');
+const PaperClient     = require('./paper-client');
+const RiskEngine      = require('./risk-engine');
+const Strategy        = require('./strategy');
+const MLAdvisor       = require('./ml-advisor');
+const NewsService     = require('./news-service');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const wss    = new WebSocket.Server({ server });
 
-// ─── Global singletons ────────────────────────────────────────────────────────
-let tradovateClient = null;
-let riskEngine = null;
-let strategy = null;
-const mlAdvisor = new MLAdvisor();
-const newsService = new NewsService();
+// ─── Defaults ────────────────────────────────────────────────────────────────
+const DEFAULT_SETTINGS = {
+  accountBalance:  50_000,
+  profitTarget:    1_000,
+  dailyLossLimit:  500,
+  trailingMaxLoss: 2_000,
+  consistencyRule: 0.30,
+  maxPositions:    3,
+};
+
+// ─── Global singletons ───────────────────────────────────────────────────────
+let activeClient     = null;  // PaperClient | TradovateClient
+let riskEngine       = null;
+let strategy         = null;
+let currentMode      = 'paper'; // 'paper' | 'live'
+const mlAdvisor      = new MLAdvisor();
+const newsService    = new NewsService();
 let autoTradingActive = false;
-const wsClients = new Set();
+const wsClients      = new Set();
 
-// ─── WebSocket connection management ─────────────────────────────────────────
+// ─── WebSocket helpers ────────────────────────────────────────────────────────
 wss.on('connection', (ws) => {
   wsClients.add(ws);
   console.log('[WS] Client connected. Total:', wsClients.size);
 
-  // Send current state immediately so the UI is never blank on reconnect
-  if (riskEngine) {
-    safeSend(ws, { type: 'riskState', data: riskEngine.getState() });
-  }
+  // Send full state immediately so the UI is never stale on reconnect
+  if (riskEngine) safeSend(ws, { type: 'riskState', data: riskEngine.getState() });
+  safeSend(ws, { type: 'mode',        mode: currentMode });
   safeSend(ws, { type: 'autoTrading', active: autoTradingActive });
 
-  ws.on('close', () => {
-    wsClients.delete(ws);
-    console.log('[WS] Client disconnected. Total:', wsClients.size);
-  });
+  ws.on('close', () => wsClients.delete(ws));
 });
 
 function safeSend(ws, payload) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
-  }
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(payload));
 }
 
 function broadcast(payload) {
   const msg = JSON.stringify(payload);
-  wsClients.forEach(ws => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(msg);
+  wsClients.forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(msg); });
+}
+
+// ─── Session initialisation (shared by boot and /api/connect) ─────────────────
+async function initSession(mode, credentials, settings) {
+  // Tear down previous client cleanly
+  if (activeClient) {
+    activeClient.removeAllListeners();
+    activeClient.disconnect();
+  }
+  autoTradingActive = false;
+
+  if (mode === 'live') {
+    activeClient = new TradovateClient(credentials);
+  } else {
+    // Paper mode: optional Finnhub key for real prices
+    activeClient = new PaperClient({
+      finnhubKey:    credentials?.finnhubKey    || null,
+      finnhubSymbol: credentials?.finnhubSymbol || 'OANDA:SPX500_USD',
+    });
+  }
+
+  await activeClient.connect();
+
+  riskEngine = new RiskEngine(settings || DEFAULT_SETTINGS);
+  strategy   = new Strategy(activeClient, riskEngine);
+  currentMode = mode;
+
+  // Price tick → broadcast + optional auto-trade
+  activeClient.on('price', (priceData) => {
+    broadcast({ type: 'price', data: priceData });
+    if (autoTradingActive) processAutoTrade(priceData).catch(console.error);
   });
+
+  // Fill → persist + update risk + broadcast
+  activeClient.on('fill', async (fillData) => {
+    await recordTrade(fillData);
+    riskEngine.onTrade(fillData);
+    mlAdvisor.recordTrade(fillData);
+    broadcast({ type: 'fill',      data: fillData });
+    broadcast({ type: 'riskState', data: riskEngine.getState() });
+
+    // Auto-halt when a risk limit is hit
+    const state = riskEngine.getState();
+    if (!state.canTrade && autoTradingActive) {
+      autoTradingActive = false;
+      broadcast({ type: 'autoTrading', active: false, reason: 'Risk limit triggered' });
+      console.log('[Server] Auto-trading halted — risk limit reached');
+    }
+  });
+
+  broadcast({ type: 'mode',      mode: currentMode });
+  broadcast({ type: 'riskState', data: riskEngine.getState() });
+  console.log(`[Server] Session initialised — mode: ${currentMode}`);
 }
 
 // ─── POST /api/connect ────────────────────────────────────────────────────────
-// Initialise the Tradovate connection and risk engine with user-supplied settings.
-// Pass empty credentials {} to use the built-in simulator.
+// Three use cases:
+//  {}                                 → stay in / reset paper mode
+//  { paper: true, finnhubKey: '…' }   → paper with real Finnhub prices
+//  { credentials: { username, … } }   → upgrade to live Tradovate
 app.post('/api/connect', async (req, res) => {
   try {
-    const { credentials = {}, settings = {} } = req.body;
+    const { credentials = {}, settings = {}, paper = false } = req.body;
 
-    // Tear down previous client if reconnecting
-    if (tradovateClient) tradovateClient.disconnect();
+    const wantLive = !paper && credentials.username;
+    const mode     = wantLive ? 'live' : 'paper';
 
-    tradovateClient = new TradovateClient(credentials);
-    await tradovateClient.connect();
-
-    riskEngine = new RiskEngine(settings);
-    strategy = new Strategy(tradovateClient, riskEngine);
-
-    // Price tick → feed to strategy when auto-trading
-    tradovateClient.on('price', (priceData) => {
-      broadcast({ type: 'price', data: priceData });
-      if (autoTradingActive) {
-        processAutoTrade(priceData).catch(console.error);
-      }
-    });
-
-    // Order fill → persist + update risk engine + notify UI
-    tradovateClient.on('fill', async (fillData) => {
-      await recordTrade(fillData);
-      riskEngine.onTrade(fillData);
-      mlAdvisor.recordTrade(fillData);
-      broadcast({ type: 'fill', data: fillData });
-      broadcast({ type: 'riskState', data: riskEngine.getState() });
-
-      // Auto-stop if any hard risk limit was hit
-      const state = riskEngine.getState();
-      if (!state.canTrade && autoTradingActive) {
-        autoTradingActive = false;
-        broadcast({ type: 'autoTrading', active: false, reason: 'Risk limit triggered' });
-        console.log('[Server] Auto-trading halted — risk limit reached');
-      }
-    });
+    await initSession(mode, credentials, { ...DEFAULT_SETTINGS, ...settings });
 
     res.json({
-      success: true,
-      simulated: tradovateClient.isSimulated,
-      message: tradovateClient.isSimulated
-        ? 'Running in SIMULATION mode — no real orders'
-        : 'Connected to live Tradovate API',
+      success:  true,
+      mode,
+      message:  mode === 'live'
+        ? `✅ Connected to live Tradovate — ${credentials.username}`
+        : credentials.finnhubKey
+          ? '📈 Paper trading — real prices via Finnhub'
+          : '📄 Paper trading — simulated prices (TradingView chart shows real market)',
     });
   } catch (err) {
     console.error('[/api/connect]', err);
@@ -116,130 +154,125 @@ app.post('/api/connect', async (req, res) => {
 });
 
 // ─── POST /api/start-auto ─────────────────────────────────────────────────────
-// Toggle the auto-trading engine on or off.
 app.post('/api/start-auto', (req, res) => {
-  if (!tradovateClient || !riskEngine) {
-    return res.status(400).json({ error: 'Call /api/connect first.' });
+  if (!activeClient || !riskEngine) {
+    return res.status(400).json({ error: 'Session not initialised.' });
   }
-
   const { active } = req.body;
 
-  // Refuse to start if risk limits are already blown
   if (active && !riskEngine.getState().canTrade) {
     return res.status(400).json({
-      error: 'Cannot start — a risk limit (daily loss / profit target / trailing drawdown) is already hit.',
+      error: 'Cannot start — a risk limit is already hit.',
       state: riskEngine.getState(),
     });
   }
 
   autoTradingActive = !!active;
   broadcast({ type: 'autoTrading', active: autoTradingActive });
-  console.log(`[Server] Auto-trading: ${autoTradingActive ? 'STARTED' : 'STOPPED'}`);
-  res.json({ success: true, autoTradingActive });
+  console.log(`[Server] Auto-trading: ${autoTradingActive ? 'STARTED' : 'STOPPED'} (${currentMode})`);
+  res.json({ success: true, autoTradingActive, mode: currentMode });
 });
 
 // ─── GET /api/trades ──────────────────────────────────────────────────────────
-// Returns trade history with optional filters: startDate, endDate, status, limit
 app.get('/api/trades', async (req, res) => {
-  try {
-    const trades = await getTrades(req.query);
-    res.json(trades);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  try { res.json(await getTrades(req.query)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ─── GET /api/balance ─────────────────────────────────────────────────────────
-// Returns live account balance and full risk engine state
 app.get('/api/balance', (req, res) => {
-  if (!riskEngine) {
-    return res.json({ balance: 0, dailyPnL: 0, connected: false });
-  }
-  res.json({ ...riskEngine.getState(), connected: true });
+  if (!riskEngine) return res.json({ balance: 0, dailyPnL: 0, ready: false });
+  res.json({ ...riskEngine.getState(), mode: currentMode, ready: true });
 });
 
 // ─── GET /api/daily-stats ─────────────────────────────────────────────────────
-// Calendar data — daily P&L per date for the CalendarView component
 app.get('/api/daily-stats', async (req, res) => {
-  try {
-    const stats = await getDailyStats(req.query);
-    res.json(stats);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  try { res.json(await getDailyStats(req.query)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ─── GET /api/news ────────────────────────────────────────────────────────────
 app.get('/api/news', async (req, res) => {
   try {
-    const events = await newsService.getUpcomingEvents();
+    const events    = await newsService.getUpcomingEvents();
     const isBlocked = await newsService.isTradingBlocked();
-    const next = newsService.getNextEvent();
-    res.json({ events, isBlocked, nextEvent: next });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+    res.json({ events, isBlocked, nextEvent: newsService.getNextEvent() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ─── GET /api/ml-stats ────────────────────────────────────────────────────────
-app.get('/api/ml-stats', (req, res) => {
-  res.json(mlAdvisor.getStats());
+app.get('/api/ml-stats', (_req, res) => res.json(mlAdvisor.getStats()));
+
+// ─── GET /api/status ──────────────────────────────────────────────────────────
+// Quick health-check / mode probe used by the frontend on mount
+app.get('/api/status', (_req, res) => {
+  res.json({
+    ready:  !!activeClient,
+    mode:   currentMode,
+    state:  riskEngine?.getState() ?? null,
+  });
 });
 
 // ─── Auto-trade decision loop ─────────────────────────────────────────────────
 async function processAutoTrade(priceData) {
   if (!autoTradingActive || !strategy || !riskEngine) return;
 
-  // 1. Hard risk-limit gate — enforced before any other check
-  const state = riskEngine.getState();
-  if (!state.canTrade) return;
+  // 1. Hard risk gate
+  if (!riskEngine.getState().canTrade) return;
 
-  // 2. News blackout window — no trades within 15 min of high-impact events
-  const newsBlocked = await newsService.isTradingBlocked();
-  if (newsBlocked) {
+  // 2. News blackout
+  if (await newsService.isTradingBlocked()) {
     broadcast({ type: 'statusMessage', level: 'warn', message: '📰 Trading paused — high-impact news window' });
     return;
   }
 
-  // 3. ML advisor — skips historically bad hours
-  const mlAdvice = mlAdvisor.shouldTrade();
-  if (!mlAdvice.trade) {
-    broadcast({ type: 'statusMessage', level: 'info', message: `🤖 ML: ${mlAdvice.reason}` });
+  // 3. ML advisor
+  const advice = mlAdvisor.shouldTrade();
+  if (!advice.trade) {
+    broadcast({ type: 'statusMessage', level: 'info', message: `🤖 ML: ${advice.reason}` });
     return;
   }
 
-  // 4. SMA cross strategy signal
+  // 4. Strategy signal
   const signal = strategy.getSignal(priceData);
   if (!signal) return;
 
-  // 5. Position-size from risk engine (1% risk, respects max-contracts)
+  // 5. Position size
   const qty = riskEngine.calculatePositionSize(priceData.price, signal.stopLoss);
   if (qty <= 0) {
-    broadcast({ type: 'statusMessage', level: 'warn', message: '⚠️ Risk engine: no contracts allowed right now' });
+    broadcast({ type: 'statusMessage', level: 'warn', message: '⚠️ Risk engine: no contracts allowed' });
     return;
   }
 
-  broadcast({ type: 'statusMessage', level: 'success', message: `🚀 Auto signal: ${signal.action.toUpperCase()} ${qty}x @ ${priceData.price.toFixed(2)} — ${signal.reason}` });
+  const modeTag = currentMode === 'paper' ? '📄 PAPER' : '🔴 LIVE';
+  broadcast({
+    type: 'statusMessage', level: 'success',
+    message: `${modeTag} ${signal.action.toUpperCase()} ${qty}x @ ${priceData.price.toFixed(2)} — ${signal.reason}`,
+  });
 
-  await tradovateClient.placeOrder({
-    symbol: priceData.symbol,
-    action: signal.action,
-    quantity: qty,
-    orderType: 'Market',
-    stopLoss: signal.stopLoss,
+  await activeClient.placeOrder({
+    symbol:     priceData.symbol,
+    action:     signal.action,
+    quantity:   qty,
+    orderType:  'Market',
+    stopLoss:   signal.stopLoss,
     takeProfit: signal.takeProfit,
   });
 }
 
-// ─── Startup ──────────────────────────────────────────────────────────────────
+// ─── Boot ─────────────────────────────────────────────────────────────────────
 async function start() {
   await initDatabase();
-  await newsService.fetchCalendar(); // Prime the news cache
+  await newsService.fetchCalendar();
+
+  // Auto-start paper trading — dashboard is usable immediately without any login
+  await initSession('paper', {}, DEFAULT_SETTINGS);
 
   const PORT = process.env.PORT || 3001;
   server.listen(PORT, () => {
-    console.log(`\n🚀 Trading server listening on http://localhost:${PORT}`);
+    console.log(`\n🚀 Server on http://localhost:${PORT}  |  mode: paper trading (default)`);
     console.log(`📡 WebSocket on ws://localhost:${PORT}`);
+    console.log(`   To go live: POST /api/connect with Tradovate credentials\n`);
   });
 }
 

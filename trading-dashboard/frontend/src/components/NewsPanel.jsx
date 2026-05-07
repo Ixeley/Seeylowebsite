@@ -8,12 +8,14 @@
  */
 import { useState, useEffect } from 'react';
 
-export default function NewsPanel({ apiConnected }) {
+export default function NewsPanel({ ready, apiConnected }) {
+  // accept both prop names so nothing breaks when called either way
+  const active = ready ?? apiConnected ?? false;
   const [data,    setData]    = useState(null);
   const [tick,    setTick]    = useState(0); // force re-render for countdown
 
   const fetchNews = () => {
-    if (!apiConnected) return;
+    if (!active) return;
     fetch('/api/news')
       .then(r => r.json())
       .then(setData)
@@ -22,10 +24,10 @@ export default function NewsPanel({ apiConnected }) {
 
   useEffect(() => {
     fetchNews();
-    const dataIv = setInterval(fetchNews, 60_000);
+    const dataIv = setInterval(fetchNews, 60_000); // eslint-disable-line
     const tickIv = setInterval(() => setTick(t => t + 1), 1000); // countdown ticks
     return () => { clearInterval(dataIv); clearInterval(tickIv); };
-  }, [apiConnected]);
+  }, [active]);
 
   const countdown = (ts) => {
     const diff = Math.max(0, ts - Date.now());
@@ -68,8 +70,8 @@ export default function NewsPanel({ apiConnected }) {
 
       {/* Event list */}
       <div className="space-y-1.5 max-h-48 overflow-y-auto">
-        {!apiConnected && (
-          <p className="text-gray-500 text-xs text-center">Connect to load news</p>
+        {!active && (
+          <p className="text-gray-500 text-xs text-center">Waiting for session…</p>
         )}
         {apiConnected && events.length === 0 && (
           <p className="text-gray-500 text-xs text-center">No high-impact events in next hour</p>

@@ -1,57 +1,62 @@
 /**
  * TradingDashboard — main shell component.
  *
- * Layout (top → bottom):
- *  Header bar — logo, live indicator, connection status
- *  Stat cards  — balance, daily P&L, open positions
- *  Risk meters — progress bars for profit target, daily loss, trailing drawdown
- *  Main grid   — PnL chart | Auto-trading panel | News panel
- *  Tabs row    — Calendar view | Trade log | Risk settings | ML stats
- *  Status feed — scrollable log of events / signals
+ * Layout:
+ *  Header         — logo, mode badge (PAPER / LIVE), WS status, ⚡ Go Live button
+ *  Stat cards     — balance, daily P&L, open positions, high-water mark
+ *  Risk meters    — profit target, daily loss, trailing drawdown
+ *  Kill banner    — shown when any risk limit is hit
+ *  Tabs           — Overview | Calendar | Trade Log | Risk Settings | ML Stats
+ *    Overview:
+ *      TradingView chart (real prices, full width)
+ *      PnL equity curve | Auto-trading panel | News panel
+ *  Status feed    — scrollable system event log
+ *
+ * Go Live modal: slides in from the right when user clicks ⚡ Go Live.
+ * It accepts Tradovate credentials and optionally a Finnhub key for real
+ * paper-trading prices.
  */
 import { useState, useEffect } from 'react';
-import PnLChart      from './PnLChart';
-import CalendarView  from './CalendarView';
-import AutoTrading   from './AutoTrading';
-import NewsPanel     from './NewsPanel';
-import RiskSettings  from './RiskSettings';
+import TradingViewWidget from './TradingViewWidget';
+import PnLChart          from './PnLChart';
+import CalendarView      from './CalendarView';
+import AutoTrading       from './AutoTrading';
+import NewsPanel         from './NewsPanel';
+import RiskSettings      from './RiskSettings';
 import { fmt$, fmtPrice, fmtPct, pnlColor, clamp } from '../utils/formatters';
 
 const TABS = ['Overview', 'Calendar', 'Trade Log', 'Risk Settings', 'ML Stats'];
 
 export default function TradingDashboard({
-  wsConnected, apiConnected, connecting, connectError, simulated,
-  onConnect,
+  wsConnected, ready, mode,
+  connecting, connectError, onConnect,
   priceData, riskState, autoTrading, fills, pnlHistory, statusMessages,
   settings, onSettingsChange,
   onAutoToggle,
 }) {
-  const [activeTab,  setActiveTab]  = useState('Overview');
-  const [mlStats,    setMlStats]    = useState(null);
-  const [dailyStats, setDailyStats] = useState([]);
-  const [trades,     setTrades]     = useState([]);
+  const [activeTab,   setActiveTab]   = useState('Overview');
+  const [showGoLive,  setShowGoLive]  = useState(false);
+  const [mlStats,     setMlStats]     = useState(null);
+  const [dailyStats,  setDailyStats]  = useState([]);
+  const [trades,      setTrades]      = useState([]);
 
-  // Fetch supplementary data when tab changes
-  useEffect(() => {
-    if (activeTab === 'ML Stats' && apiConnected) {
-      fetch('/api/ml-stats').then(r => r.json()).then(setMlStats).catch(() => {});
-    }
-    if (activeTab === 'Calendar' && apiConnected) {
-      fetch('/api/daily-stats').then(r => r.json()).then(setDailyStats).catch(() => {});
-    }
-    if (activeTab === 'Trade Log' && apiConnected) {
-      fetch('/api/trades').then(r => r.json()).then(setTrades).catch(() => {});
-    }
-  }, [activeTab, apiConnected]);
+  const isPaper = mode === 'paper';
+  const rs      = riskState;
 
-  // Refresh trade log whenever a new fill arrives
+  // Refresh supplementary data when tab changes
   useEffect(() => {
-    if (activeTab === 'Trade Log' && apiConnected && fills.length) {
+    if (!ready) return;
+    if (activeTab === 'ML Stats')   fetch('/api/ml-stats').then(r => r.json()).then(setMlStats).catch(() => {});
+    if (activeTab === 'Calendar')   fetch('/api/daily-stats').then(r => r.json()).then(setDailyStats).catch(() => {});
+    if (activeTab === 'Trade Log')  fetch('/api/trades').then(r => r.json()).then(setTrades).catch(() => {});
+  }, [activeTab, ready]);
+
+  // Refresh trade log when a new fill arrives
+  useEffect(() => {
+    if (activeTab === 'Trade Log' && ready && fills.length) {
       fetch('/api/trades').then(r => r.json()).then(setTrades).catch(() => {});
     }
   }, [fills]);
-
-  const rs = riskState;
 
   return (
     <div className="min-h-screen bg-dark-900 text-white font-mono flex flex-col">
@@ -59,249 +64,308 @@ export default function TradingDashboard({
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <header className="border-b border-dark-500 bg-dark-800/80 backdrop-blur sticky top-0 z-50 px-6 py-3">
         <div className="flex items-center justify-between max-w-screen-2xl mx-auto">
-          {/* Logo */}
+
+          {/* Logo + mode badge */}
           <div className="flex items-center gap-3">
             <span className="text-2xl font-bold text-neon-cyan text-glow-cyan tracking-widest">
               ⚡ PROPTRADER
             </span>
-            {simulated && (
-              <span className="text-xs bg-neon-orange/20 border border-neon-orange/40 text-neon-orange px-2 py-0.5 rounded">
-                SIMULATION
+
+            {/* Mode badge — paper vs live */}
+            {isPaper ? (
+              <span className="flex items-center gap-1.5 text-xs bg-neon-orange/15 border border-neon-orange/40 text-neon-orange px-2.5 py-1 rounded-full">
+                <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                  <path d="M9 2a1 1 0 000 2h2a1 1 0 100-2H9z"/>
+                  <path fillRule="evenodd" d="M4 5a2 2 0 012-2v1a1 1 0 102 0V3h4v1a1 1 0 102 0V3a2 2 0 012 2v11a2 2 0 01-2 2H6a2 2 0 01-2-2V5zm3 4a1 1 0 000 2h.01a1 1 0 100-2H7zm3 0a1 1 0 000 2h3a1 1 0 100-2h-3zm-3 4a1 1 0 100 2h.01a1 1 0 100-2H7zm3 0a1 1 0 100 2h3a1 1 0 100-2h-3z" clipRule="evenodd"/>
+                </svg>
+                PAPER TRADING
+              </span>
+            ) : (
+              <span className="flex items-center gap-1.5 text-xs bg-neon-green/15 border border-neon-green/40 text-neon-green px-2.5 py-1 rounded-full animate-pulse-slow">
+                <span className="live-dot" style={{ width: 6, height: 6 }} />
+                LIVE — TRADOVATE
               </span>
             )}
           </div>
 
-          {/* Status cluster */}
+          {/* Status cluster + Go Live */}
           <div className="flex items-center gap-4 text-sm">
+            {/* WS connection dot */}
             <div className="flex items-center gap-2">
-              <span className={wsConnected  ? 'live-dot' : 'inline-block w-2 h-2 rounded-full bg-gray-600'} />
-              <span className={wsConnected  ? 'text-neon-green' : 'text-gray-500'}>
-                {wsConnected ? 'WS LIVE' : 'WS OFF'}
+              <span className={wsConnected ? 'live-dot' : 'inline-block w-2 h-2 rounded-full bg-gray-600'} />
+              <span className={wsConnected ? 'text-neon-green text-xs' : 'text-gray-500 text-xs'}>
+                {wsConnected ? 'LIVE FEED' : 'RECONNECTING…'}
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={apiConnected ? 'live-dot' : 'inline-block w-2 h-2 rounded-full bg-gray-600'} />
-              <span className={apiConnected ? 'text-neon-cyan' : 'text-gray-500'}>
-                {apiConnected ? 'CONNECTED' : 'DISCONNECTED'}
-              </span>
-            </div>
+
+            {/* Live price ticker */}
             {priceData && (
-              <div className="text-neon-cyan text-glow-cyan tabular-nums">
-                {priceData.symbol} <span className="font-bold">{fmtPrice(priceData.price)}</span>
+              <div className="text-neon-cyan text-glow-cyan tabular-nums text-sm hidden md:block">
+                {priceData.symbol}
+                <span className="font-bold ml-2">{fmtPrice(priceData.price)}</span>
+                {priceData.paper && !priceData.real && (
+                  <span className="text-neon-orange text-xs ml-2">SIM</span>
+                )}
               </div>
+            )}
+
+            {/* Go Live button — only shown in paper mode */}
+            {isPaper && (
+              <button
+                onClick={() => setShowGoLive(true)}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold bg-neon-green/15 border border-neon-green/50
+                           text-neon-green hover:bg-neon-green/25 hover:shadow-neon-green transition-all"
+              >
+                ⚡ Go Live
+              </button>
+            )}
+
+            {/* Go Paper button — shown when live */}
+            {!isPaper && (
+              <button
+                onClick={() => onConnect({ paper: true })}
+                className="px-4 py-1.5 rounded-lg text-xs font-bold bg-neon-orange/15 border border-neon-orange/50
+                           text-neon-orange hover:bg-neon-orange/25 transition-all"
+              >
+                📄 Back to Paper
+              </button>
             )}
           </div>
         </div>
       </header>
 
-      {/* ── Connect prompt ───────────────────────────────────────────────────── */}
-      {!apiConnected && (
-        <ConnectBanner
+      {/* ── Go Live modal ────────────────────────────────────────────────────── */}
+      {showGoLive && (
+        <GoLiveModal
           connecting={connecting}
           error={connectError}
-          settings={settings}
-          onConnect={onConnect}
+          onConnect={(creds) => { onConnect({ credentials: creds }); setShowGoLive(false); }}
+          onClose={() => setShowGoLive(false)}
         />
       )}
 
       {/* ── Main content ────────────────────────────────────────────────────── */}
-      {apiConnected && (
-        <main className="flex-1 max-w-screen-2xl mx-auto w-full px-4 py-4 space-y-4">
+      <main className="flex-1 max-w-screen-2xl mx-auto w-full px-4 py-4 space-y-4">
 
-          {/* ── Stat cards ────────────────────────────────────────────────── */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <StatCard
-              label="Account Balance"
-              value={fmt$(rs?.accountBalance, 0)}
-              sub={`Start: ${fmt$(rs?.startingBalance, 0)}`}
-              color="cyan"
-            />
-            <StatCard
-              label="Daily P&L"
-              value={fmt$(rs?.dailyPnL)}
-              sub={fmtPct(rs?.dailyPnLPercent)}
-              color={rs?.dailyPnL >= 0 ? 'green' : 'pink'}
-              large
-            />
-            <StatCard
-              label="Open Positions"
-              value={`${rs?.openPositions ?? 0} / ${rs?.maxPositions ?? 3}`}
-              sub="contracts"
-              color="purple"
-            />
-            <StatCard
-              label="High Water Mark"
-              value={fmt$(rs?.highWaterMark, 0)}
-              sub={`Trailing room: ${fmt$(rs?.trailingRoom, 0)}`}
-              color="orange"
-            />
+        {/* ── Loading state ───────────────────────────────────────────────── */}
+        {!ready && (
+          <div className="flex items-center justify-center h-40 gap-3 text-neon-cyan text-glow-cyan">
+            <svg className="animate-spin w-6 h-6" fill="none" viewBox="0 0 24 24">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+            </svg>
+            Initialising paper trading session…
           </div>
+        )}
 
-          {/* ── Risk-limit meters ─────────────────────────────────────────── */}
-          <div className="neon-card grid grid-cols-1 md:grid-cols-3 gap-4">
-            <RiskMeter
-              label="Profit Target"
-              current={rs?.dailyPnL ?? 0}
-              limit={rs?.profitTarget ?? 1000}
-              progress={rs?.profitProgress ?? 0}
-              hit={rs?.profitTargetHit}
-              color="green"
-              format={(v) => fmt$(v)}
-            />
-            <RiskMeter
-              label="Daily Loss Limit"
-              current={Math.abs(Math.min(0, rs?.dailyPnL ?? 0))}
-              limit={rs?.dailyLossLimit ?? 500}
-              progress={rs?.lossProgress ?? 0}
-              hit={rs?.dailyLimitHit}
-              color="pink"
-              danger
-              format={(v) => fmt$(v)}
-            />
-            <RiskMeter
-              label="Trailing Drawdown"
-              current={(rs?.highWaterMark ?? 0) - (rs?.accountBalance ?? 0)}
-              limit={rs?.trailingMaxLoss ?? 2000}
-              progress={rs?.trailingProgress ?? 0}
-              hit={rs?.trailingDrawdownHit}
-              color="orange"
-              danger
-              format={(v) => fmt$(v)}
-            />
-          </div>
-
-          {/* ── Risk kill-switch banner ────────────────────────────────────── */}
-          {rs && !rs.canTrade && (
-            <div className="border border-neon-red/60 bg-neon-red/10 rounded-xl p-4 text-center shadow-neon-red animate-pulse-slow">
-              <span className="text-neon-red text-lg font-bold">
-                🛑 TRADING HALTED —{' '}
-                {rs.dailyLimitHit       ? 'Daily loss limit reached'  :
-                 rs.profitTargetHit     ? 'Profit target achieved 🎯' :
-                 rs.trailingDrawdownHit ? 'Trailing drawdown breached' : 'Risk limit triggered'}
-              </span>
+        {ready && (
+          <>
+            {/* ── Stat cards ──────────────────────────────────────────────── */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <StatCard label="Account Balance"  value={fmt$(rs?.accountBalance, 0)} sub={`Start: ${fmt$(rs?.startingBalance, 0)}`} color="cyan" />
+              <StatCard label="Daily P&L"        value={fmt$(rs?.dailyPnL)}          sub={fmtPct(rs?.dailyPnLPercent)}               color={rs?.dailyPnL >= 0 ? 'green' : 'pink'} large />
+              <StatCard label="Open Positions"   value={`${rs?.openPositions ?? 0} / ${rs?.maxPositions ?? 3}`} sub="contracts"      color="purple" />
+              <StatCard label="High Water Mark"  value={fmt$(rs?.highWaterMark, 0)}  sub={`Trailing room: ${fmt$(rs?.trailingRoom, 0)}`} color="orange" />
             </div>
-          )}
 
-          {/* ── Tab navigation ────────────────────────────────────────────── */}
-          <div className="flex gap-1 border-b border-dark-500">
-            {TABS.map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`px-4 py-2 text-sm rounded-t-lg transition-all ${
-                  activeTab === tab
-                    ? 'bg-dark-700 text-neon-cyan border-b-2 border-neon-cyan text-glow-cyan'
-                    : 'text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                {tab}
-              </button>
-            ))}
-          </div>
+            {/* ── Risk meters ─────────────────────────────────────────────── */}
+            <div className="neon-card grid grid-cols-1 md:grid-cols-3 gap-4">
+              <RiskMeter label="Profit Target"    current={rs?.dailyPnL ?? 0}                                     limit={rs?.profitTarget ?? 1000}   progress={rs?.profitProgress ?? 0}   hit={rs?.profitTargetHit}     color="green"  format={fmt$} />
+              <RiskMeter label="Daily Loss Limit" current={Math.abs(Math.min(0, rs?.dailyPnL ?? 0))}             limit={rs?.dailyLossLimit ?? 500}  progress={rs?.lossProgress ?? 0}     hit={rs?.dailyLimitHit}       color="pink"   format={fmt$} danger />
+              <RiskMeter label="Trailing Drawdown" current={(rs?.highWaterMark ?? 0) - (rs?.accountBalance ?? 0)} limit={rs?.trailingMaxLoss ?? 2000} progress={rs?.trailingProgress ?? 0} hit={rs?.trailingDrawdownHit} color="orange" format={fmt$} danger />
+            </div>
 
-          {/* ── Tab content ───────────────────────────────────────────────── */}
-          {activeTab === 'Overview' && (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="lg:col-span-2">
-                <PnLChart pnlHistory={pnlHistory} riskState={rs} />
+            {/* ── Risk kill-switch banner ──────────────────────────────────── */}
+            {rs && !rs.canTrade && (
+              <div className="border border-neon-red/60 bg-neon-red/10 rounded-xl p-4 text-center shadow-neon-red animate-pulse-slow">
+                <span className="text-neon-red text-lg font-bold">
+                  🛑 TRADING HALTED —{' '}
+                  {rs.dailyLimitHit       ? 'Daily loss limit reached'   :
+                   rs.profitTargetHit     ? 'Profit target achieved 🎯'  :
+                   rs.trailingDrawdownHit ? 'Trailing drawdown breached'  : 'Risk limit triggered'}
+                </span>
               </div>
+            )}
+
+            {/* ── Tabs ────────────────────────────────────────────────────── */}
+            <div className="flex gap-1 border-b border-dark-500">
+              {TABS.map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`px-4 py-2 text-sm rounded-t-lg transition-all ${
+                    activeTab === tab
+                      ? 'bg-dark-700 text-neon-cyan border-b-2 border-neon-cyan text-glow-cyan'
+                      : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
+
+            {/* ── Tab content ─────────────────────────────────────────────── */}
+            {activeTab === 'Overview' && (
               <div className="space-y-4">
-                <AutoTrading
-                  active={autoTrading}
-                  canTrade={rs?.canTrade ?? false}
-                  onToggle={onAutoToggle}
-                  priceData={priceData}
-                  riskState={rs}
-                />
-                <NewsPanel apiConnected={apiConnected} />
+                {/* TradingView chart — always shows real ES futures price */}
+                <TradingViewWidget symbol="CME_MINI:ES1!" interval="5" height={440} />
+
+                {/* Bottom row: equity curve | auto-trading | news */}
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <div className="lg:col-span-2">
+                    <PnLChart pnlHistory={pnlHistory} riskState={rs} />
+                  </div>
+                  <div className="space-y-4">
+                    <AutoTrading
+                      active={autoTrading}
+                      canTrade={rs?.canTrade ?? false}
+                      mode={mode}
+                      onToggle={onAutoToggle}
+                      priceData={priceData}
+                      riskState={rs}
+                    />
+                    <NewsPanel ready={ready} />
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {activeTab === 'Calendar'     && <CalendarView dailyStats={dailyStats} />}
-          {activeTab === 'Trade Log'    && <TradeLog trades={trades} fills={fills} />}
-          {activeTab === 'Risk Settings' && (
-            <RiskSettings
-              settings={settings}
-              onChange={onSettingsChange}
-              onReconnect={(s) => onConnect({}, s)}
-            />
-          )}
-          {activeTab === 'ML Stats'     && <MLStatsPanel stats={mlStats} />}
+            {activeTab === 'Calendar'      && <CalendarView dailyStats={dailyStats} />}
+            {activeTab === 'Trade Log'     && <TradeLog trades={trades} fills={fills} />}
+            {activeTab === 'Risk Settings' && (
+              <RiskSettings
+                settings={settings}
+                onChange={onSettingsChange}
+                onReconnect={(s) => onConnect({ settings: s, paper: isPaper })}
+              />
+            )}
+            {activeTab === 'ML Stats'      && <MLStatsPanel stats={mlStats} />}
 
-          {/* ── Status feed ───────────────────────────────────────────────── */}
-          <StatusFeed messages={statusMessages} />
-        </main>
-      )}
+            {/* ── Status feed ─────────────────────────────────────────────── */}
+            <StatusFeed messages={statusMessages} />
+          </>
+        )}
+      </main>
     </div>
   );
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// ─── Go Live modal ────────────────────────────────────────────────────────────
+function GoLiveModal({ connecting, error, onConnect, onClose }) {
+  const [creds, setCreds] = useState({
+    username: '', password: '', cid: '', sec: '',
+    appId: 'PropTraderDashboard', appVersion: '1.0',
+    demo: false, finnhubKey: '',
+  });
 
-function ConnectBanner({ connecting, error, settings, onConnect }) {
-  const [creds, setCreds] = useState({ username: '', password: '' });
+  const set = (k, v) => setCreds(p => ({ ...p, [k]: v }));
 
   return (
-    <div className="flex flex-col items-center justify-center flex-1 p-8 space-y-6">
-      <div className="neon-card w-full max-w-md space-y-4 relative scan-lines">
-        <h2 className="text-neon-cyan text-xl font-bold text-glow-cyan text-center">
-          Connect to Tradovate
-        </h2>
-        <p className="text-gray-400 text-sm text-center">
-          Leave credentials blank to run in simulation mode.
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm">
+      <div className="neon-card w-full max-w-md space-y-4 relative scan-lines border border-neon-green/30 shadow-neon-green animate-fadeIn">
+        <div className="flex justify-between items-center">
+          <h2 className="text-neon-green text-lg font-bold text-glow-green">⚡ Go Live — Tradovate</h2>
+          <button onClick={onClose} className="text-gray-500 hover:text-white text-xl leading-none">✕</button>
+        </div>
+
+        <p className="text-gray-400 text-xs">
+          Enter your Tradovate API credentials. Enable <strong className="text-white">Demo</strong> to
+          trade on the Tradovate demo server without real money.
         </p>
 
-        <input
-          className="w-full bg-dark-700 border border-dark-400 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan"
-          placeholder="Username (blank = simulation)"
-          value={creds.username}
-          onChange={e => setCreds(p => ({ ...p, username: e.target.value }))}
-        />
-        <input
-          type="password"
-          className="w-full bg-dark-700 border border-dark-400 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-neon-cyan"
-          placeholder="Password"
-          value={creds.password}
-          onChange={e => setCreds(p => ({ ...p, password: e.target.value }))}
-        />
+        {/* Demo toggle */}
+        <label className="flex items-center gap-3 cursor-pointer select-none">
+          <div
+            onClick={() => set('demo', !creds.demo)}
+            className={`relative w-11 h-6 rounded-full transition-colors ${creds.demo ? 'bg-neon-cyan/40 border-neon-cyan' : 'bg-dark-500'} border`}
+          >
+            <span className={`absolute top-0.5 left-0.5 w-5 h-5 rounded-full transition-transform bg-white/90 ${creds.demo ? 'translate-x-5' : ''}`} />
+          </div>
+          <span className="text-sm text-gray-300">
+            {creds.demo
+              ? <span className="text-neon-cyan">Demo mode (paper on Tradovate servers)</span>
+              : <span className="text-neon-pink font-bold">LIVE mode — REAL MONEY</span>}
+          </span>
+        </label>
+
+        {/* Credential fields */}
+        {[
+          { key: 'username',   label: 'Username',   type: 'text',     ph: 'Tradovate username' },
+          { key: 'password',   label: 'Password',   type: 'password', ph: 'Tradovate password' },
+          { key: 'cid',        label: 'Client ID',  type: 'text',     ph: 'cid from Tradovate API app' },
+          { key: 'sec',        label: 'Secret',     type: 'password', ph: 'sec from Tradovate API app' },
+        ].map(f => (
+          <div key={f.key}>
+            <label className="text-xs text-gray-400 uppercase tracking-wide block mb-1">{f.label}</label>
+            <input
+              type={f.type}
+              value={creds[f.key]}
+              placeholder={f.ph}
+              onChange={e => set(f.key, e.target.value)}
+              className="w-full bg-dark-700 border border-dark-400 rounded-lg px-3 py-2 text-sm text-white
+                         placeholder-gray-600 focus:outline-none focus:border-neon-cyan transition-colors"
+            />
+          </div>
+        ))}
+
+        {/* Optional Finnhub key for real paper prices */}
+        <div className="border-t border-dark-500 pt-3">
+          <label className="text-xs text-gray-400 uppercase tracking-wide block mb-1">
+            Finnhub Key <span className="text-gray-600 normal-case">(optional — real prices in paper mode)</span>
+          </label>
+          <input
+            type="text"
+            value={creds.finnhubKey}
+            placeholder="Free key from finnhub.io — omit to use simulated prices"
+            onChange={e => set('finnhubKey', e.target.value)}
+            className="w-full bg-dark-700 border border-dark-400 rounded-lg px-3 py-2 text-sm text-white
+                       placeholder-gray-600 focus:outline-none focus:border-neon-cyan transition-colors"
+          />
+        </div>
 
         {error && (
-          <div className="text-neon-pink text-sm text-center bg-neon-pink/10 rounded-lg px-3 py-2">
-            {error}
-          </div>
+          <div className="text-neon-pink text-sm bg-neon-pink/10 rounded-lg px-3 py-2">{error}</div>
         )}
 
-        <button
-          onClick={() => onConnect(creds.username ? creds : {}, settings)}
-          disabled={connecting}
-          className="w-full py-3 rounded-lg font-bold text-dark-900 bg-neon-cyan hover:shadow-neon-cyan transition-all disabled:opacity-50"
-        >
-          {connecting ? '⏳ Connecting…' : '⚡ Connect'}
-        </button>
-
-        <p className="text-gray-500 text-xs text-center">
-          Real Tradovate API keys needed for live trading.
-        </p>
+        <div className="flex gap-3">
+          <button
+            onClick={onClose}
+            className="flex-1 py-2.5 rounded-lg border border-dark-400 text-gray-400 hover:text-white text-sm transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onConnect(creds)}
+            disabled={connecting || !creds.username}
+            className={`flex-1 py-2.5 rounded-lg font-bold text-sm transition-all
+              ${creds.demo
+                ? 'bg-neon-cyan/20 border border-neon-cyan/60 text-neon-cyan hover:shadow-neon-cyan'
+                : 'bg-neon-green/20 border border-neon-green/60 text-neon-green hover:shadow-neon-green'
+              } disabled:opacity-40`}
+          >
+            {connecting ? '⏳ Connecting…' : creds.demo ? '🔵 Connect Demo' : '🔴 Connect Live'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
+// ─── Shared sub-components ────────────────────────────────────────────────────
+
 function StatCard({ label, value, sub, color, large }) {
-  const colors = {
-    green:  'text-neon-green  text-glow-green  border-neon-green/30',
-    cyan:   'text-neon-cyan   text-glow-cyan   border-neon-cyan/30',
-    pink:   'text-neon-pink   text-glow-pink   border-neon-pink/30',
-    purple: 'text-neon-purple                  border-neon-purple/30',
-    orange: 'text-neon-orange text-glow-orange border-neon-orange/30',
-  };
+  const c = {
+    green:  'text-neon-green  border-neon-green/30',
+    cyan:   'text-neon-cyan   border-neon-cyan/30',
+    pink:   'text-neon-pink   border-neon-pink/30',
+    purple: 'text-neon-purple border-neon-purple/30',
+    orange: 'text-neon-orange border-neon-orange/30',
+  }[color] || 'text-neon-cyan border-neon-cyan/30';
+
   return (
-    <div className={`neon-card border ${colors[color] || colors.cyan} space-y-1 relative scan-lines`}>
+    <div className={`neon-card border ${c} space-y-1 relative scan-lines`}>
       <p className="text-xs text-gray-400 uppercase tracking-widest">{label}</p>
-      <p className={`${large ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums ${colors[color]}`}>
-        {value}
-      </p>
+      <p className={`${large ? 'text-3xl' : 'text-2xl'} font-bold tabular-nums ${c.split(' ')[0]}`}>{value}</p>
       {sub && <p className="text-xs text-gray-500">{sub}</p>}
     </div>
   );
@@ -309,35 +373,18 @@ function StatCard({ label, value, sub, color, large }) {
 
 function RiskMeter({ label, current, limit, progress, hit, color, danger, format }) {
   const pct = clamp(progress, 0, 100);
-  const barColors = {
-    green:  'bg-neon-green  shadow-neon-green',
-    pink:   'bg-neon-pink   shadow-neon-pink',
-    orange: 'bg-neon-orange shadow-neon-orange',
-  };
-  const textColors = {
-    green:  'text-neon-green',
-    pink:   'text-neon-pink',
-    orange: 'text-neon-orange',
-  };
+  const bar = { green: 'bg-neon-green shadow-neon-green', pink: 'bg-neon-pink shadow-neon-pink', orange: 'bg-neon-orange shadow-neon-orange' }[color];
+  const txt = { green: 'text-neon-green', pink: 'text-neon-pink', orange: 'text-neon-orange' }[color];
   return (
     <div className="space-y-2">
       <div className="flex justify-between text-xs text-gray-400">
         <span>{label}</span>
-        <span className={textColors[color]}>
-          {format(current)} / {format(limit)}
-        </span>
+        <span className={txt}>{format(current)} / {format(limit)}</span>
       </div>
       <div className="progress-bar">
-        <div
-          className={`progress-fill ${barColors[color]} ${hit ? 'animate-pulse' : ''}`}
-          style={{ width: `${pct}%` }}
-        />
+        <div className={`progress-fill ${bar} ${hit ? 'animate-pulse' : ''}`} style={{ width: `${pct}%` }} />
       </div>
-      {hit && (
-        <p className={`text-xs font-bold ${textColors[color]} animate-pulse`}>
-          {danger ? '⛔ LIMIT HIT' : '🎯 TARGET HIT'}
-        </p>
-      )}
+      {hit && <p className={`text-xs font-bold ${txt} animate-pulse`}>{danger ? '⛔ LIMIT HIT' : '🎯 TARGET HIT'}</p>}
     </div>
   );
 }
@@ -359,11 +406,9 @@ function TradeLog({ trades, fills }) {
         <tbody className="divide-y divide-dark-600">
           {rows.map(t => (
             <tr key={t.id} className="hover:bg-dark-700/50 transition-colors">
-              <td className="py-1.5 pr-4 text-gray-500 font-mono text-xs">{String(t.id).slice(-8)}</td>
-              <td className="pr-4 text-neon-cyan">{t.symbol || t.symbol}</td>
-              <td className={`pr-4 font-bold ${(t.action || t.action) === 'buy' ? 'text-neon-green' : 'text-neon-pink'}`}>
-                {(t.action || '').toUpperCase()}
-              </td>
+              <td className="py-1.5 pr-4 text-gray-500">{String(t.id).slice(-8)}</td>
+              <td className="pr-4 text-neon-cyan">{t.symbol}</td>
+              <td className={`pr-4 font-bold ${t.action === 'buy' ? 'text-neon-green' : 'text-neon-pink'}`}>{(t.action || '').toUpperCase()}</td>
               <td className="pr-4">{t.quantity}</td>
               <td className="pr-4">{fmtPrice(t.entry_price ?? t.price)}</td>
               <td className="pr-4">{t.exit_price ? fmtPrice(t.exit_price) : '—'}</td>
@@ -380,22 +425,17 @@ function TradeLog({ trades, fills }) {
 
 function MLStatsPanel({ stats }) {
   if (!stats) return <div className="text-gray-500 text-sm neon-card">Loading ML stats…</div>;
-
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
       <div className="neon-card space-y-3">
         <h3 className="text-neon-cyan text-sm font-bold text-glow-cyan">Best Hours (EWMA Win Rate)</h3>
         {stats.bestHours.length === 0 && <p className="text-gray-500 text-xs">Not enough data yet.</p>}
-        {stats.bestHours.map(h => (
-          <HourRow key={h.hour} stat={h} positive />
-        ))}
+        {stats.bestHours.map(h => <HourRow key={h.hour} stat={h} positive />)}
       </div>
       <div className="neon-card space-y-3">
         <h3 className="text-neon-pink text-sm font-bold text-glow-pink">Worst Hours (EWMA Win Rate)</h3>
         {stats.worstHours.length === 0 && <p className="text-gray-500 text-xs">Not enough data yet.</p>}
-        {stats.worstHours.map(h => (
-          <HourRow key={h.hour} stat={h} positive={false} />
-        ))}
+        {stats.worstHours.map(h => <HourRow key={h.hour} stat={h} positive={false} />)}
       </div>
       <div className="neon-card md:col-span-2">
         <h3 className="text-neon-cyan text-sm font-bold mb-3 text-glow-cyan">Day-of-Week Performance</h3>
@@ -417,7 +457,6 @@ function MLStatsPanel({ stats }) {
 }
 
 function HourRow({ stat, positive }) {
-  const pct = (stat.ewmaWinRate * 100).toFixed(1);
   return (
     <div className="flex items-center gap-3 text-xs">
       <span className="w-12 text-gray-400">{String(stat.hour).padStart(2, '0')}:00</span>
@@ -427,26 +466,21 @@ function HourRow({ stat, positive }) {
           style={{ width: `${clamp(stat.ewmaWinRate * 100, 0, 100)}%` }}
         />
       </div>
-      <span className={positive ? 'text-neon-green w-12 text-right' : 'text-neon-pink w-12 text-right'}>{pct}%</span>
+      <span className={`${positive ? 'text-neon-green' : 'text-neon-pink'} w-12 text-right`}>{(stat.ewmaWinRate * 100).toFixed(1)}%</span>
       <span className="text-gray-500 w-8">{stat.trades}T</span>
     </div>
   );
 }
 
 function StatusFeed({ messages }) {
-  const levelColor = {
-    success: 'text-neon-green',
-    warn:    'text-neon-orange',
-    info:    'text-neon-cyan',
-    error:   'text-neon-pink',
-  };
+  const lc = { success: 'text-neon-green', warn: 'text-neon-orange', info: 'text-neon-cyan', error: 'text-neon-pink' };
   return (
     <div className="neon-card">
       <h3 className="text-gray-400 text-xs font-bold mb-2 uppercase tracking-widest">System Log</h3>
       <div className="space-y-1 max-h-32 overflow-y-auto">
         {messages.length === 0 && <p className="text-gray-600 text-xs">Waiting for events…</p>}
         {messages.map(m => (
-          <div key={m.id} className={`text-xs flex gap-3 ${levelColor[m.level] || 'text-gray-400'} animate-fadeIn`}>
+          <div key={m.id} className={`text-xs flex gap-3 ${lc[m.level] || 'text-gray-400'} animate-fadeIn`}>
             <span className="text-gray-600 shrink-0">{fmtTime(m.ts)}</span>
             <span>{m.message}</span>
           </div>
@@ -456,16 +490,11 @@ function StatusFeed({ messages }) {
   );
 }
 
-// re-export so formatters are available in sub-components without extra imports
+// Inline helpers (avoid import-cycle with TradingDashboard importing itself)
 function fmtTime(iso) {
   if (!iso) return '—';
   return new Date(iso).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 function fmtPrice(n) {
   return n == null ? '—' : n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-function pnlColor(n) {
-  if (n > 0) return 'text-neon-green text-glow-green';
-  if (n < 0) return 'text-neon-pink  text-glow-pink';
-  return 'text-gray-400';
 }

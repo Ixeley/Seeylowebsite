@@ -10,7 +10,8 @@
 import { useState, useEffect } from 'react';
 import { fmtPrice, fmt$ } from '../utils/formatters';
 
-export default function AutoTrading({ active, canTrade, onToggle, priceData, riskState }) {
+export default function AutoTrading({ active, canTrade, mode, onToggle, priceData, riskState }) {
+  const isPaper = mode === 'paper';
   const [indicators, setIndicators] = useState(null);
 
   // Periodically poll the backend for the latest strategy indicators
@@ -45,10 +46,21 @@ export default function AutoTrading({ active, canTrade, onToggle, priceData, ris
     <div className="neon-card space-y-4 relative scan-lines">
       <h3 className="text-neon-cyan text-sm font-bold text-glow-cyan">Auto-Trading Engine</h3>
 
-      {/* Status */}
-      <div className="text-center">
+      {/* Mode badge + status */}
+      <div className="text-center space-y-2">
+        <div className="flex justify-center">
+          {isPaper ? (
+            <span className="text-xs bg-neon-orange/15 border border-neon-orange/40 text-neon-orange px-3 py-1 rounded-full">
+              📄 PAPER MODE — no real money at risk
+            </span>
+          ) : (
+            <span className="text-xs bg-neon-green/15 border border-neon-green/40 text-neon-green px-3 py-1 rounded-full animate-pulse-slow">
+              🔴 LIVE MODE — real orders on Tradovate
+            </span>
+          )}
+        </div>
         <p className={`text-lg font-bold ${colorMap[si.color]}`}>{si.label}</p>
-        <p className="text-xs text-gray-500 mt-1">Strategy: SMA(9) × SMA(21) + ATR stops</p>
+        <p className="text-xs text-gray-500">Strategy: SMA(9) × SMA(21) + ATR stops</p>
       </div>
 
       {/* Start / Stop button */}

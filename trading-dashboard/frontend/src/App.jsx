@@ -1,13 +1,13 @@
 /**
  * App — root component.
  *
- * Owns:
- *  - WebSocket connection (delegates to useWebSocket)
- *  - Global state: price, riskState, fills, autoTrading, statusMessages
- *  - User settings (passed down to RiskSettings, read by TradingDashboard)
- *  - /api/connect handshake
+ * Mode lifecycle:
+ *  MOUNT  → auto-connects to paper trading (no user action needed)
+ *  "Go Live" modal → user supplies Tradovate credentials → live mode
+ *
+ * The dashboard is ALWAYS visible; there is no blocking connect screen.
  */
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import useWebSocket from './hooks/useWebSocket';
 import TradingDashboard from './components/TradingDashboard';
 
@@ -21,25 +21,23 @@ const DEFAULT_SETTINGS = {
 };
 
 export default function App() {
-  const [settings,      setSettings]      = useState(DEFAULT_SETTINGS);
-  const [credentials,   setCredentials]   = useState({});
-  const [connected,     setConnected]     = useState(false);
-  const [connecting,    setConnecting]    = useState(false);
-  const [connectError,  setConnectError]  = useState(null);
-  const [simulated,     setSimulated]     = useState(true);
+  const [settings,       setSettings]       = useState(DEFAULT_SETTINGS);
+  const [mode,           setMode]           = useState('paper'); // 'paper' | 'live'
+  const [connecting,     setConnecting]     = useState(false);
+  const [connectError,   setConnectError]   = useState(null);
+  const [ready,          setReady]          = useState(false);   // backend session initialised
 
-  // Live data slices — updated by WebSocket messages
-  const [priceData,     setPriceData]     = useState(null);
-  const [riskState,     setRiskState]     = useState(null);
-  const [autoTrading,   setAutoTrading]   = useState(false);
-  const [fills,         setFills]         = useState([]);
+  // Live data slices — populated by WebSocket messages
+  const [priceData,      setPriceData]      = useState(null);
+  const [riskState,      setRiskState]      = useState(null);
+  const [autoTrading,    setAutoTrading]    = useState(false);
+  const [fills,          setFills]          = useState([]);
   const [statusMessages, setStatusMessages] = useState([]);
-  const [pnlHistory,    setPnlHistory]    = useState([]);
+  const [pnlHistory,     setPnlHistory]     = useState([]);
 
-  // Accumulate rolling P&L history for the chart (capped at 200 points)
   const pnlRef = useRef([]);
 
-  // ─── WebSocket message router ─────────────────────────────────────────────
+  // ─── WebSocket message router ──────────────────────────────────────────────
   const handleMessage = useCallback((msg) => {
     switch (msg.type) {
       case 'price':
@@ -48,8 +46,7 @@ export default function App() {
 
       case 'riskState':
         setRiskState(msg.data);
-        // Track equity curve
-        if (msg.data?.accountBalance) {
+        if (msg.data?.accountBalance != null) {
           pnlRef.current = [
             ...pnlRef.current.slice(-199),
             { time: new Date().toISOString(), value: msg.data.dailyPnL, balance: msg.data.accountBalance },
@@ -58,15 +55,18 @@ export default function App() {
         }
         break;
 
+      case 'mode':
+        setMode(msg.mode);
+        setReady(true);
+        break;
+
       case 'fill':
         setFills(prev => [msg.data, ...prev].slice(0, 100));
         break;
 
       case 'autoTrading':
         setAutoTrading(msg.active);
-        if (msg.reason) {
-          addStatus({ level: 'warn', message: `Auto-trading stopped: ${msg.reason}` });
-        }
+        if (msg.reason) addStatus({ level: 'warn', message: `Auto-trading stopped: ${msg.reason}` });
         break;
 
       case 'statusMessage':
@@ -91,35 +91,57 @@ export default function App() {
     setStatusMessages(prev => [entry, ...prev].slice(0, 50));
   }, []);
 
-  const { connected: wsConnected, send } = useWebSocket(handleMessage);
+  const { connected: wsConnected } = useWebSocket(handleMessage);
 
-  // ─── Connect to backend ───────────────────────────────────────────────────
-  const handleConnect = async (creds, userSettings) => {
+  // ─── On mount: probe backend so we're in sync with its current mode ────────
+  useEffect(() => {
+    fetch('/api/status')
+      .then(r => r.json())
+      .then(data => {
+        if (data.ready) {
+          setMode(data.mode);
+          if (data.state) setRiskState(data.state);
+          setReady(true);
+        }
+      })
+      .catch(() => {
+        // Backend not up yet — WS will sync us when it reconnects
+      });
+  }, []);
+
+  // ─── Connect / upgrade session ────────────────────────────────────────────
+  // Called either to:
+  //  a) change settings (paper stays paper)
+  //  b) go live with Tradovate credentials
+  const handleConnect = useCallback(async ({ credentials, settings: newSettings, paper = false }) => {
     setConnecting(true);
     setConnectError(null);
     try {
       const resp = await fetch('/api/connect', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ credentials: creds || {}, settings: userSettings || settings }),
+        body:    JSON.stringify({
+          credentials: credentials || {},
+          settings:    newSettings || settings,
+          paper,
+        }),
       });
       const data = await resp.json();
       if (!data.success) throw new Error(data.error);
 
-      setConnected(true);
-      setSimulated(data.simulated);
-      setCredentials(creds || {});
-      if (userSettings) setSettings(userSettings);
+      setMode(data.mode);
+      setReady(true);
+      if (newSettings) setSettings(newSettings);
       addStatus({ level: 'success', message: data.message });
     } catch (err) {
       setConnectError(err.message);
     } finally {
       setConnecting(false);
     }
-  };
+  }, [settings]);
 
   // ─── Toggle auto-trading ──────────────────────────────────────────────────
-  const handleAutoToggle = async (active) => {
+  const handleAutoToggle = useCallback(async (active) => {
     try {
       const resp = await fetch('/api/start-auto', {
         method:  'POST',
@@ -131,16 +153,16 @@ export default function App() {
     } catch (err) {
       addStatus({ level: 'error', message: `Auto-trading toggle failed: ${err.message}` });
     }
-  };
+  }, []);
 
   return (
     <TradingDashboard
-      // Connection
+      // Connection / mode
       wsConnected={wsConnected}
-      apiConnected={connected}
+      ready={ready}
+      mode={mode}
       connecting={connecting}
       connectError={connectError}
-      simulated={simulated}
       onConnect={handleConnect}
       // Live data
       priceData={priceData}
