@@ -5,6 +5,7 @@ import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { ParticleBackground } from "@/components/ParticleBackground";
 import { AnalysisResult } from "@/components/AnalysisResult";
+import { ChartCanvas } from "@/components/ChartCanvas";
 import { analyzeChart, type DeepSeekAnalysis } from "@/lib/deepseek";
 import { saveAnalysis } from "@/lib/mockAnalysis";
 import { Upload, ImageIcon, Sparkles, Loader2, X, Cpu } from "lucide-react";
@@ -132,11 +133,15 @@ function AnalyzePage() {
               />
             ) : (
               <div className="glass-strong rounded-2xl p-3 relative group">
-                <img
-                  src={image}
-                  alt="Uploaded chart"
-                  className="w-full rounded-xl border border-border object-contain max-h-[380px]"
-                />
+                {analysis ? (
+                  <ChartCanvas imageUrl={image} analysis={analysis} />
+                ) : (
+                  <img
+                    src={image}
+                    alt="Uploaded chart"
+                    className="w-full rounded-xl border border-border object-contain max-h-[380px]"
+                  />
+                )}
                 <button
                   onClick={reset}
                   className="absolute top-5 right-5 h-7 w-7 rounded-full bg-background/80 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition hover:bg-muted"
