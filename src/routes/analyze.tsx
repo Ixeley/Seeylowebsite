@@ -6,9 +6,9 @@ import { Footer } from "@/components/Footer";
 import { ParticleBackground } from "@/components/ParticleBackground";
 import { AnalysisResult } from "@/components/AnalysisResult";
 import { ChartCanvas } from "@/components/ChartCanvas";
-import { analyzeChart, getStoredKey, saveKey, type TradeAnalysis } from "@/lib/openai";
+import { analyzeChart, checkNewsForSymbol, getStoredKey, saveKey, type TradeAnalysis, type EntryMode } from "@/lib/openai";
 import { saveAnalysis } from "@/lib/mockAnalysis";
-import { Upload, ImageIcon, Sparkles, Loader2, X, Settings, Check } from "lucide-react";
+import { Upload, Sparkles, Loader2, X, Settings, Check, Zap, BookOpen, Newspaper } from "lucide-react";
 
 export const Route = createFileRoute("/analyze")({
   component: AnalyzePage,
@@ -33,6 +33,7 @@ const LOADING_STEPS = [
 
 function AnalyzePage() {
   const [tradeStyle, setTradeStyle] = useState<Style>("Day Trade");
+  const [entryMode, setEntryMode] = useState<EntryMode>("standard");
   const [image, setImage] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
@@ -41,6 +42,8 @@ function AnalyzePage() {
   const [showKeyInput, setShowKeyInput] = useState(false);
   const [keyDraft, setKeyDraft] = useState("");
   const [hasKey, setHasKey] = useState(() => !!getStoredKey());
+  const [news, setNews] = useState<string | null>(null);
+  const [newsLoading, setNewsLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = (file: File) => {
@@ -51,18 +54,33 @@ function AnalyzePage() {
     reader.readAsDataURL(file);
   };
 
+  const handleCheckNews = async () => {
+    const symbol = analysis?.symbol ?? "NQ";
+    setNewsLoading(true);
+    setNews(null);
+    try {
+      const result = await checkNewsForSymbol(symbol);
+      setNews(result);
+    } catch (err) {
+      toast.error("News check failed", { description: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setNewsLoading(false);
+    }
+  };
+
   const handleAnalyze = async () => {
     if (!image) return;
     setLoading(true);
     setLoadingStep(0);
     setAnalysis(null);
+    setNews(null);
 
     const stepInterval = setInterval(() => {
       setLoadingStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s));
     }, 1100);
 
     try {
-      const result = await analyzeChart(image, tradeStyle);
+      const result = await analyzeChart(image, tradeStyle, entryMode);
       clearInterval(stepInterval);
       setAnalysis(result);
       saveAnalysis({
@@ -90,7 +108,7 @@ function AnalyzePage() {
     }
   };
 
-  const reset = () => { setImage(null); setAnalysis(null); };
+  const reset = () => { setImage(null); setAnalysis(null); setNews(null); };
 
   const handleSaveKey = () => {
     const k = keyDraft.trim();
@@ -154,27 +172,62 @@ function AnalyzePage() {
           </div>
         )}
 
-        {/* Trade style selector */}
-        <div className="mb-8 max-w-sm">
-          <span className="text-xs uppercase tracking-widest text-muted-foreground">Trade Style</span>
-          <div className="mt-2 flex gap-2">
-            {STYLES.map((s) => (
+        {/* Trade style + entry mode selectors */}
+        <div className="mb-8 flex flex-wrap gap-6 items-start">
+          <div className="max-w-sm flex-1 min-w-[220px]">
+            <span className="text-xs uppercase tracking-widest text-muted-foreground">Trade Style</span>
+            <div className="mt-2 flex gap-2">
+              {STYLES.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setTradeStyle(s)}
+                  className={`flex-1 rounded-xl border px-3 py-2.5 text-sm font-medium transition ${
+                    tradeStyle === s
+                      ? "bg-primary text-primary-foreground border-primary glow-primary-sm"
+                      : "glass border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              Use a <span className="text-primary font-medium">{TIMEFRAME_GUIDE[tradeStyle]}</span> chart for best results
+            </p>
+          </div>
+
+          <div>
+            <span className="text-xs uppercase tracking-widest text-muted-foreground">Entry Mode</span>
+            <div className="mt-2 flex gap-2">
               <button
-                key={s}
-                onClick={() => setTradeStyle(s)}
-                className={`flex-1 rounded-xl border px-3 py-2.5 text-sm font-medium transition ${
-                  tradeStyle === s
-                    ? "bg-primary text-primary-foreground border-primary glow-primary-sm"
-                    : "glass border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+                onClick={() => setEntryMode("fast")}
+                className={`flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                  entryMode === "fast"
+                    ? "bg-yellow-500/20 border-yellow-400/60 text-yellow-300"
+                    : "glass border-border text-muted-foreground hover:text-foreground hover:border-yellow-400/30"
                 }`}
               >
-                {s}
+                <Zap className="h-3.5 w-3.5" /> Fast
               </button>
-            ))}
+              <button
+                onClick={() => setEntryMode("standard")}
+                className={`flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
+                  entryMode === "standard"
+                    ? "bg-primary/20 border-primary/60 text-primary"
+                    : "glass border-border text-muted-foreground hover:text-foreground hover:border-primary/30"
+                }`}
+              >
+                <BookOpen className="h-3.5 w-3.5" /> Standard
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {entryMode === "fast" ? (
+                <><span className="text-yellow-400 font-medium">Market now</span> — enters at current price</>
+              ) : (
+                <><span className="text-primary font-medium">Limit order</span> — waits for OB/FVG pullback</>
+              )}
+            </p>
           </div>
-          <p className="mt-2 text-xs text-muted-foreground">
-            Use a <span className="text-primary font-medium">{TIMEFRAME_GUIDE[tradeStyle]}</span> chart for best results
-          </p>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-6">
@@ -214,15 +267,40 @@ function AnalyzePage() {
           </div>
 
           {/* Right: results */}
-          <div>
+          <div className="space-y-4">
             {loading && <LoadingState step={loadingStep} />}
             {!loading && analysis && (
-              <AnalysisResult
-                analysis={analysis}
-                tradeStyle={tradeStyle}
-                onReset={reset}
-                onReanalyze={handleAnalyze}
-              />
+              <>
+                <AnalysisResult
+                  analysis={analysis}
+                  tradeStyle={tradeStyle}
+                  onReset={reset}
+                  onReanalyze={handleAnalyze}
+                />
+                {/* News check */}
+                <div className="glass-strong rounded-2xl p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2 text-sm font-semibold">
+                      <Newspaper className="h-4 w-4 text-primary" />
+                      News Impact · {analysis.symbol}
+                    </div>
+                    <button
+                      onClick={handleCheckNews}
+                      disabled={newsLoading}
+                      className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/20 transition disabled:opacity-50"
+                    >
+                      {newsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
+                      {newsLoading ? "Checking..." : "Check Today's News"}
+                    </button>
+                  </div>
+                  {news && (
+                    <p className="text-xs leading-relaxed text-muted-foreground whitespace-pre-line animate-fade-up">{news}</p>
+                  )}
+                  {!news && !newsLoading && (
+                    <p className="text-xs text-muted-foreground/60">Check for economic events, FOMC, CPI, NFP etc. that may impact this pair today.</p>
+                  )}
+                </div>
+              </>
             )}
             {!loading && !analysis && <EmptyState hasImage={!!image} style={tradeStyle} />}
           </div>
