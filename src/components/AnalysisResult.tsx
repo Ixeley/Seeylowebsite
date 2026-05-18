@@ -11,6 +11,9 @@ import {
   Scale,
   Sparkles,
   RefreshCw,
+  Clock,
+  TrendingUp,
+  TrendingDown,
 } from "lucide-react";
 
 interface Props {
@@ -28,31 +31,43 @@ export function AnalysisResult({ analysis: a, market, tradeStyle, onReset, onRea
   const dirBg = isLong
     ? "bg-bullish/15 border-bullish/40 glow-bullish"
     : "bg-bearish/15 border-bearish/40 glow-bearish";
-  const Icon = isLong ? ArrowUp : ArrowDown;
+  const DirectionIcon = isLong ? ArrowUp : ArrowDown;
+  const WhyIcon = isLong ? TrendingUp : TrendingDown;
+  const whyText = isLong ? a.whyBuy : a.whySell;
 
   return (
     <div className="glass-strong rounded-2xl p-6 animate-fade-up">
       {/* Header */}
-      <div className="flex items-start justify-between mb-6">
+      <div className="flex items-start justify-between mb-5">
         <div>
-          <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-muted-foreground mb-2">
+          <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-muted-foreground mb-1.5">
             <Sparkles className="h-3.5 w-3.5 text-primary" /> AI Analysis
           </div>
-          <h3 className="text-xl font-semibold">
-            {market}{" "}
-            <span className="text-muted-foreground text-sm">· {tradeStyle}</span>
+          <h3 className="text-xl font-bold">
+            {a.symbol || market}
           </h3>
+          <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">
+            <span>{tradeStyle}</span>
+            {a.timeframe && a.timeframe !== "—" && (
+              <>
+                <span className="opacity-40">·</span>
+                <span className="flex items-center gap-1">
+                  <Clock className="h-3 w-3" /> {a.timeframe}
+                </span>
+              </>
+            )}
+          </div>
         </div>
         <div
-          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-semibold ${dirBg} ${dirColor}`}
+          className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm font-bold ${dirBg} ${dirColor}`}
         >
-          <Icon className="h-4 w-4" /> {a.direction}
+          <DirectionIcon className="h-4 w-4" /> {a.direction}
         </div>
       </div>
 
       {/* Price levels + gauge */}
-      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-6 items-center">
-        <div className="space-y-2.5">
+      <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-5 items-center">
+        <div className="space-y-2">
           <PriceRow
             icon={<Crosshair className="h-4 w-4 text-primary" />}
             label="Entry"
@@ -85,12 +100,23 @@ export function AnalysisResult({ analysis: a, market, tradeStyle, onReset, onRea
         </div>
       </div>
 
+      {/* Why buy / sell */}
+      {whyText && (
+        <div className={`mt-5 rounded-xl border p-4 ${isLong ? "bg-bullish/5 border-bullish/25" : "bg-bearish/5 border-bearish/25"}`}>
+          <div className={`flex items-center gap-2 text-xs font-semibold uppercase tracking-wider mb-2 ${dirColor}`}>
+            <WhyIcon className="h-3.5 w-3.5" />
+            {isLong ? "Why Long" : "Why Short"}
+          </div>
+          <p className="text-sm leading-relaxed text-muted-foreground">{whyText}</p>
+        </div>
+      )}
+
       {/* Reasoning accordion */}
       <button
         onClick={() => setReasoningOpen(!reasoningOpen)}
-        className="mt-6 w-full flex items-center justify-between rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm hover:bg-muted/50 transition"
+        className="mt-4 w-full flex items-center justify-between rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm hover:bg-muted/50 transition"
       >
-        <span className="font-medium">AI Reasoning</span>
+        <span className="font-medium">Technical Reasoning</span>
         <ChevronDown
           className={`h-4 w-4 transition-transform ${reasoningOpen ? "rotate-180" : ""}`}
         />
@@ -102,7 +128,7 @@ export function AnalysisResult({ analysis: a, market, tradeStyle, onReset, onRea
       )}
 
       {/* Actions */}
-      <div className="mt-6 grid grid-cols-2 gap-3">
+      <div className="mt-5 grid grid-cols-2 gap-3">
         <button
           onClick={onReanalyze}
           className="rounded-lg border border-primary/50 bg-primary/10 px-4 py-2.5 text-sm font-semibold text-primary hover:bg-primary/20 transition flex items-center justify-center gap-2"
@@ -155,5 +181,6 @@ function PriceRow({
 }
 
 function fmt(n: number) {
+  if (!n) return "—";
   return n < 10 ? n.toFixed(4) : n.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
