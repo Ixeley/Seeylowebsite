@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Header } from "@/components/Header";
@@ -8,7 +8,9 @@ import { AnalysisResult } from "@/components/AnalysisResult";
 import { ChartCanvas } from "@/components/ChartCanvas";
 import { analyzeChart, checkNewsForSymbol, getStoredKey, saveKey, type TradeAnalysis, type EntryMode } from "@/lib/openai";
 import { saveAnalysis } from "@/lib/mockAnalysis";
-import { Upload, Sparkles, Loader2, X, Settings, Check, Zap, BookOpen, Newspaper } from "lucide-react";
+import { incrementUsage } from "@/lib/supabase";
+import { useAuth } from "@/contexts/AuthContext";
+import { Upload, Sparkles, Loader2, X, Settings, Check, Zap, BookOpen, Newspaper, Lock } from "lucide-react";
 
 export const Route = createFileRoute("/analyze")({
   component: AnalyzePage,
@@ -32,6 +34,7 @@ const LOADING_STEPS = [
 ];
 
 function AnalyzePage() {
+  const { user, subscription, todayUsage, dailyLimit, trialActive, refreshUsage } = useAuth();
   const [tradeStyle, setTradeStyle] = useState<Style>("Day Trade");
   const [entryMode, setEntryMode] = useState<EntryMode>("standard");
   const [image, setImage] = useState<string | null>(null);
@@ -46,6 +49,11 @@ function AnalyzePage() {
   const [newsLoading, setNewsLoading] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Feature gating: zone boxes + news require Pro+
+  const activePlan = subscription?.status === "active" ? subscription.plan : null;
+  const hasProFeatures = trialActive || activePlan === "pro" || activePlan === "platinum";
+  const canAnalyze = !user || trialActive || (dailyLimit > 0 && todayUsage < dailyLimit);
+
   const handleFile = (file: File) => {
     if (!file.type.startsWith("image/")) { toast.error("Please upload an image file"); return; }
     if (file.size > 20 * 1024 * 1024) { toast.error("File too large", { description: "Max 20 MB" }); return; }
@@ -55,6 +63,10 @@ function AnalyzePage() {
   };
 
   const handleCheckNews = async () => {
+    if (!hasProFeatures) {
+      toast.error("Pro feature", { description: "Upgrade to Pro or Platinum for news analysis." });
+      return;
+    }
     const symbol = analysis?.symbol ?? "NQ";
     setNewsLoading(true);
     setNews(null);
@@ -70,6 +82,10 @@ function AnalyzePage() {
 
   const handleAnalyze = async () => {
     if (!image) return;
+    if (!canAnalyze) {
+      toast.error("Daily limit reached", { description: "Upgrade your plan for more analyses today." });
+      return;
+    }
     setLoading(true);
     setLoadingStep(0);
     setAnalysis(null);
@@ -83,13 +99,14 @@ function AnalyzePage() {
       const result = await analyzeChart(image, tradeStyle, entryMode);
       clearInterval(stepInterval);
       setAnalysis(result);
+      if (user) { incrementUsage(user.id); refreshUsage(); }
       saveAnalysis({
         id: crypto.randomUUID(),
         market: result.symbol,
         tradeStyle,
         direction: result.direction,
         entry: result.entry,
-        takeProfits: result.takeProfits,
+        takeProfits: result.takeProfits.map((tp) => (typeof tp === "number" ? tp : tp.price)),
         stopLoss: result.stopLoss,
         riskReward: result.riskReward,
         confidence: result.confidence,
@@ -137,6 +154,40 @@ function AnalyzePage() {
             Upload a chart screenshot — AI reads the symbol, price, and structure automatically.
           </p>
         </div>
+
+        {/* Auth / usage banner */}
+        {!user ? (
+          <div className="mb-6 glass rounded-xl border border-primary/30 p-4 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm font-semibold">Start your free 3-day trial</p>
+              <p className="text-xs text-muted-foreground mt-0.5">Sign up to track analyses, unlock all features, and choose a plan.</p>
+            </div>
+            <div className="flex gap-2 flex-shrink-0">
+              <Link to="/login" className="rounded-lg border border-border px-3 py-2 text-xs font-medium text-muted-foreground hover:text-foreground transition">Sign in</Link>
+              <Link to="/signup" className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition">Free trial</Link>
+            </div>
+          </div>
+        ) : todayUsage >= dailyLimit && !trialActive ? (
+          <div className="mb-6 glass rounded-xl border border-bearish/30 bg-bearish/5 p-4 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <Lock className="h-4 w-4 text-bearish" />
+              <div>
+                <p className="text-sm font-semibold text-bearish">Daily limit reached ({todayUsage}/{dailyLimit})</p>
+                <p className="text-xs text-muted-foreground mt-0.5">Upgrade for more analyses today.</p>
+              </div>
+            </div>
+            <Link to="/pricing" className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition flex-shrink-0">Upgrade</Link>
+          </div>
+        ) : user && (
+          <div className="mb-6 flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="h-1.5 w-1.5 rounded-full bg-bullish" />
+            {trialActive ? (
+              <span>Free trial · <span className="text-primary font-medium">Full access</span></span>
+            ) : (
+              <span>{todayUsage}/{dailyLimit} analyses today · <Link to="/profile" className="text-primary hover:underline">Manage plan</Link></span>
+            )}
+          </div>
+        )}
 
         {/* API key setup */}
         {(!hasKey || showKeyInput) && (

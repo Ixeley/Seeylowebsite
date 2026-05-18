@@ -50,7 +50,7 @@ export function ChartCanvas({ imageUrl, analysis }: Props) {
       const prices: number[] = [
         analysis.entry,
         analysis.stopLoss,
-        ...analysis.takeProfits,
+        ...analysis.takeProfits.map((tp) => (typeof tp === "number" ? tp : tp.price)),
         ...analysis.keyLevels.flatMap((kl) => [kl.priceHigh, kl.priceLow]),
       ].filter((p) => p > 0);
 
