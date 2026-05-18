@@ -25,18 +25,6 @@ export interface DeepSeekAnalysis {
   keyLevels: KeyLevel[];
 }
 
-// Current approximate prices (2025-2026) for text-only fallback
-const CURRENT_PRICES: Record<string, { approx: number; note: string }> = {
-  "NQ":       { approx: 21500,  note: "Nasdaq-100 E-mini Futures (NQ1!/MNQ) — currently ~21,500" },
-  "S&P 500":  { approx: 5900,   note: "S&P 500 E-mini Futures (ES1!/MES) — currently ~5,900" },
-  "EUR/USD":  { approx: 1.0850, note: "Euro/USD forex — currently ~1.0850" },
-  "BTC":      { approx: 104000, note: "Bitcoin/USD — currently ~104,000" },
-  "ETH":      { approx: 2500,   note: "Ethereum/USD — currently ~2,500" },
-  "GC":       { approx: 3300,   note: "Gold Futures (GC) — currently ~3,300" },
-  "CL":       { approx: 62,     note: "Crude Oil Futures (CL) — currently ~62" },
-  "Custom":   { approx: 0,      note: "" },
-};
-
 async function compressImage(dataUrl: string): Promise<string> {
   return new Promise((resolve) => {
     const img = new Image();
@@ -56,78 +44,54 @@ async function compressImage(dataUrl: string): Promise<string> {
 
 const SCHEMA = `{
   "direction": "LONG" or "SHORT",
-  "symbol": "<instrument ticker visible on chart — e.g. NQ1!, MNQ, BTCUSDT, EURUSD, ES1!>",
-  "timeframe": "<timeframe label visible on chart — e.g. 1m, 3m, 5m, 15m, 1H, 4H, 1D>",
-  "currentPrice": <most recent price on chart right axis — exact number>,
-  "entry": <precise entry price from chart structure>,
+  "symbol": "<ticker visible on chart, e.g. NQ1!, MNQ, BTCUSDT, EURUSD>",
+  "timeframe": "<timeframe visible on chart, e.g. 1m, 5m, 15m, 1H, 4H, 1D>",
+  "currentPrice": <current price — use the exact value provided in CURRENT PRICE below>,
+  "entry": <entry price — must be within 1% of currentPrice>,
   "takeProfits": [<tp1>, <tp2>, <tp3>],
-  "stopLoss": <precise SL price>,
+  "stopLoss": <stop loss — must be within 2% of currentPrice>,
   "riskReward": <R:R number e.g. 2.5>,
   "confidence": <integer 55-95>,
-  "tradeSetup": "<1 sentence: exact setup trigger — e.g. 'Bearish rejection from 4H order block at 21,340 with break of structure'>",
-  "reasoning": "<3-4 sentences: trend structure, key confluence, momentum, invalidation level>",
-  "whyDirection": "<2-3 bullet-style reasons for LONG or SHORT with exact price levels>",
-  "supportLevels": [<2-4 key support prices>],
-  "resistanceLevels": [<2-4 key resistance prices>],
+  "tradeSetup": "<1 sentence: exact setup — e.g. 'Bearish rejection from 4H OB at X with BOS below Y'>",
+  "reasoning": "<3-4 sentences: trend, structure, confluence, momentum, invalidation>",
+  "whyDirection": "<2-3 specific reasons for LONG or SHORT with exact price references>",
+  "supportLevels": [<2-4 support prices near current price>],
+  "resistanceLevels": [<2-4 resistance prices near current price>],
   "keyLevels": [
-    {"type": "order_block"|"fvg"|"liquidity"|"bos"|"fibonacci"|"support"|"resistance", "price": <number>, "description": "<e.g. 4H Bearish OB>"},
-    ...
+    {"type": "order_block"|"fvg"|"liquidity"|"bos"|"fibonacci"|"support"|"resistance", "price": <number>, "description": "<e.g. 4H Bearish OB>"}
   ]
 }`;
 
-function buildVisionPrompt(market: string, style: string): string {
-  const hint = CURRENT_PRICES[market];
-  const priceHint = hint?.approx
-    ? `\nNote: if you cannot read the price axis, ${hint.note}.`
+function buildPrompt(market: string, style: string, currentPrice: number): string {
+  const priceConstraint = currentPrice > 0
+    ? `\n\n⚠️ CURRENT PRICE = ${currentPrice}
+ALL prices (entry, stopLoss, takeProfits, supportLevels, resistanceLevels, keyLevels) MUST be within 3% of ${currentPrice}.
+Do NOT produce prices outside the range [${(currentPrice * 0.97).toFixed(2)}, ${(currentPrice * 1.03).toFixed(2)}].`
     : "";
 
-  return `You are a senior institutional trader and technical analyst. Analyze this ${market} chart for a ${style} setup.
+  return `You are a senior institutional trader using ICT / Smart Money Concepts (SMC).
+Analyze the provided ${market} chart for a ${style} setup.${priceConstraint}
 
-STEP 1 — READ THE CHART:
-- Find the ticker/symbol label (usually top-left of chart)
-- Find the timeframe label (e.g. "5" = 5m, "1H", "D")
-- Read the current price from the RIGHT price axis — this is the most important step${priceHint}
+ANALYSIS FRAMEWORK:
+1. Determine trend structure: higher highs/lows (bullish) or lower highs/lows (bearish)
+2. Identify Break of Structure (BOS) and Change of Character (CHoCH)
+3. Mark Order Blocks (OB): last opposing candle before the impulsive move
+4. Find Fair Value Gaps (FVG): 3-candle imbalance zones
+5. Mark liquidity pools: equal highs/lows, stops above/below swing points
+6. Set entry at OB edge or key S/R, TP at next liquidity target, SL below/above structure
+7. Read symbol and timeframe from chart labels
 
-STEP 2 — MARKET STRUCTURE ANALYSIS:
-- Identify trend: higher highs/lows (uptrend) or lower highs/lows (downtrend)
-- Mark Break of Structure (BOS) and Change of Character (CHoCH)
-- Find Order Blocks (OB): last bearish candle before bullish impulse (bullish OB) or last bullish candle before bearish impulse (bearish OB)
-- Find Fair Value Gaps (FVG/imbalances): 3-candle patterns with price gap
-- Mark liquidity pools: equal highs/lows, swing points
-- Note support/resistance levels from previous pivots
+${currentPrice > 0 ? `REMINDER: Every price in your JSON must be near ${currentPrice}. Entry, SL, and TPs must all be within 3% of ${currentPrice}.` : ""}
 
-STEP 3 — TRADE SETUP:
-- Direction based on structure
-- Entry at OB edge, FVG, or key S/R level
-- TP1 at nearest liquidity, TP2 and TP3 at next major levels
-- SL below/above the OB or last swing that invalidates the setup
-
-Respond ONLY with valid JSON, no markdown, no text outside the JSON:
+Respond ONLY with valid JSON. No markdown, no text outside JSON:
 ${SCHEMA}`;
 }
 
-function buildTextPrompt(market: string, style: string): string {
-  const hint = CURRENT_PRICES[market] ?? { approx: 100, note: market };
-  const priceNote = hint.approx > 0
-    ? `\nCURRENT PRICE REFERENCE: ${hint.note}. All prices MUST be near this level.`
-    : "";
-
-  return `You are a senior institutional trader. Provide a complete professional ${style} trade plan for ${market}.${priceNote}
-
-Perform a full ICT/SMC analysis:
-- Identify current trend structure (higher highs/lows or lower highs/lows)
-- Find the key Order Block (OB) where price is likely to react
-- Note any Fair Value Gaps (FVG) in the path
-- Mark Break of Structure (BOS) that confirms direction
-- Set entry at the OB or key level, TP at liquidity targets, SL below/above structure
-
-CRITICAL: All prices MUST reflect current ${market} market prices as of 2025-2026. Do NOT use prices from before 2024.
-
-Respond ONLY with valid JSON, no markdown, no text outside the JSON:
-${SCHEMA}`;
-}
-
-async function callAPI(model: string, messages: object[], maxTokens = 900): Promise<string | null> {
+async function callAPI(
+  model: string,
+  messages: object[],
+  maxTokens = 900,
+): Promise<string | null> {
   try {
     const res = await fetch(`${DEEPSEEK_BASE}/chat/completions`, {
       method: "POST",
@@ -140,7 +104,6 @@ async function callAPI(model: string, messages: object[], maxTokens = 900): Prom
         messages,
         max_tokens: maxTokens,
         temperature: 0.1,
-        response_format: { type: "text" },
       }),
     });
     if (!res.ok) return null;
@@ -152,8 +115,7 @@ async function callAPI(model: string, messages: object[], maxTokens = 900): Prom
 }
 
 function extractJSON(raw: string): DeepSeekAnalysis | null {
-  // Strip markdown fences if present
-  const clean = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "");
+  const clean = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
   const match = clean.match(/\{[\s\S]*\}/);
   if (!match) return null;
   try {
@@ -163,13 +125,21 @@ function extractJSON(raw: string): DeepSeekAnalysis | null {
   }
 }
 
-function normalize(r: DeepSeekAnalysis, market: string): DeepSeekAnalysis {
+function validatePrices(r: DeepSeekAnalysis, currentPrice: number): boolean {
+  if (currentPrice <= 0) return true;
+  const lo = currentPrice * 0.97;
+  const hi = currentPrice * 1.03;
+  const check = (p: number) => p >= lo && p <= hi;
+  return check(r.entry) && check(r.stopLoss) && r.takeProfits.every((tp) => check(tp));
+}
+
+function normalize(r: DeepSeekAnalysis, market: string, currentPrice: number): DeepSeekAnalysis {
   const tps = Array.isArray(r.takeProfits) ? r.takeProfits : [];
   return {
     ...r,
     symbol: r.symbol || market,
     timeframe: r.timeframe || "—",
-    currentPrice: r.currentPrice || r.entry,
+    currentPrice: r.currentPrice || currentPrice || r.entry,
     tradeSetup: r.tradeSetup || "",
     whyDirection: r.whyDirection || "",
     supportLevels: Array.isArray(r.supportLevels) ? r.supportLevels.filter(Boolean) : [],
@@ -179,49 +149,58 @@ function normalize(r: DeepSeekAnalysis, market: string): DeepSeekAnalysis {
   };
 }
 
-const SYSTEM = "You are a senior institutional trading analyst. Respond ONLY with a valid JSON object — no markdown fences, no explanation, no text before or after the JSON.";
+const SYSTEM =
+  "You are a senior institutional trading analyst using ICT/SMC methodology. Respond ONLY with a valid JSON object — no markdown, no text outside the JSON.";
 
 export async function analyzeChart(
   imageDataUrl: string,
   market: string,
   tradeStyle: string,
+  currentPrice: number,
 ): Promise<DeepSeekAnalysis> {
   const compressed = await compressImage(imageDataUrl);
-  const visionMsg = [
+  const prompt = buildPrompt(market, tradeStyle, currentPrice);
+
+  const visionMessages = [
     { role: "system", content: SYSTEM },
     {
       role: "user",
       content: [
         { type: "image_url", image_url: { url: compressed } },
-        { type: "text", text: buildVisionPrompt(market, tradeStyle) },
+        { type: "text", text: prompt },
       ],
     },
   ];
 
-  // Try vision models
-  for (const model of ["deepseek-vl2", "deepseek-vl", "deepseek-vl2-small"]) {
-    const raw = await callAPI(model, visionMsg);
+  // Try vision models (deepseek-vl2, deepseek-vl) — fail silently if not available
+  for (const model of ["deepseek-vl2", "deepseek-vl"]) {
+    const raw = await callAPI(model, visionMessages);
     if (raw) {
       const parsed = extractJSON(raw);
-      if (parsed?.entry && parsed.entry > 0) return normalize(parsed, market);
+      if (parsed?.entry && validatePrices(parsed, currentPrice)) {
+        return normalize(parsed, market, currentPrice);
+      }
     }
   }
 
-  // Try deepseek-chat with image (may or may not work)
-  const chatVisionRaw = await callAPI("deepseek-chat", visionMsg);
+  // Try deepseek-chat with image attached
+  const chatVisionRaw = await callAPI("deepseek-chat", visionMessages);
   if (chatVisionRaw) {
     const parsed = extractJSON(chatVisionRaw);
-    if (parsed?.entry && parsed.entry > 0) return normalize(parsed, market);
+    if (parsed?.entry && validatePrices(parsed, currentPrice)) {
+      return normalize(parsed, market, currentPrice);
+    }
   }
 
-  // Text-only fallback with current price anchors
-  const textRaw = await callAPI("deepseek-chat", [
+  // Text-only fallback — price constraint makes this accurate when currentPrice is set
+  const textMessages = [
     { role: "system", content: SYSTEM },
-    { role: "user", content: buildTextPrompt(market, tradeStyle) },
-  ]);
+    { role: "user", content: prompt },
+  ];
+  const textRaw = await callAPI("deepseek-chat", textMessages, 1000);
   if (textRaw) {
     const parsed = extractJSON(textRaw);
-    if (parsed?.entry && parsed.entry > 0) return normalize(parsed, market);
+    if (parsed?.entry) return normalize(parsed, market, currentPrice);
   }
 
   throw new Error("All API attempts failed or returned invalid data.");
