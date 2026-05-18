@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
-import type { DeepSeekAnalysis } from "@/lib/deepseek";
+import type { TradeAnalysis } from "@/lib/openai";
 
 interface Props {
   imageUrl: string;
-  analysis: DeepSeekAnalysis;
+  analysis: TradeAnalysis;
 }
 
 const COLORS = {
