@@ -1,14 +1,14 @@
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const KEY_STORAGE = "seeylo_openai_key";
 
-export function getStoredKey(): string {
-  return localStorage.getItem(KEY_STORAGE) ?? "";
-}
-export function saveKey(key: string) {
-  localStorage.setItem(KEY_STORAGE, key.trim());
-}
-export function clearKey() {
-  localStorage.removeItem(KEY_STORAGE);
+export function getStoredKey(): string { return localStorage.getItem(KEY_STORAGE) ?? ""; }
+export function saveKey(key: string) { localStorage.setItem(KEY_STORAGE, key.trim()); }
+export function clearKey() { localStorage.removeItem(KEY_STORAGE); }
+
+export interface TakeProfit {
+  price: number;
+  probability: number; // 0-100, AI estimate of TP being hit
+  reason: string;      // e.g. "Equal highs / BSL", "4H FVG fill"
 }
 
 export interface KeyLevel {
@@ -18,66 +18,37 @@ export interface KeyLevel {
   description: string;
 }
 
+export type EntryMode = "standard" | "fast";
+
 export interface TradeAnalysis {
   direction: "LONG" | "SHORT";
   symbol: string;
   timeframe: string;
   currentPrice: number;
   entry: number;
-  takeProfits: [number, number, number];
+  takeProfits: [TakeProfit, TakeProfit, TakeProfit];
   stopLoss: number;
   riskReward: number;
   riskPoints: number;
   riskDollars: number;
   rewardDollars: number;
   confidence: number;
+  entryMode: EntryMode;
   tradeSetup: string;
   reasoning: string;
   whyDirection: string;
   keyLevels: KeyLevel[];
 }
 
-// Dollar value per 1 point move for common instruments
-const INSTRUMENT_SPECS: Record<string, { dollarPerPoint: number; name: string }> = {
-  NQ:    { dollarPerPoint: 20,  name: "E-mini NQ (NQ1!)" },
-  MNQ:   { dollarPerPoint: 2,   name: "Micro NQ" },
-  ES:    { dollarPerPoint: 50,  name: "E-mini S&P (ES1!)" },
-  MES:   { dollarPerPoint: 5,   name: "Micro ES" },
-  YM:    { dollarPerPoint: 5,   name: "Dow Futures (YM1!)" },
-  MYM:   { dollarPerPoint: 0.5, name: "Micro Dow" },
-  RTY:   { dollarPerPoint: 50,  name: "Russell 2000 (RTY1!)" },
-  GC:    { dollarPerPoint: 100, name: "Gold Futures (GC1!)" },
-  MGC:   { dollarPerPoint: 10,  name: "Micro Gold" },
-  CL:    { dollarPerPoint: 1000,name: "Crude Oil (CL1!)" },
-  "6E":  { dollarPerPoint: 125000, name: "Euro Futures" },
+const INSTRUMENT_SPECS: Record<string, { dpp: number }> = {
+  NQ:  { dpp: 20 }, MNQ: { dpp: 2 }, ES:  { dpp: 50 }, MES: { dpp: 5 },
+  YM:  { dpp: 5 },  MYM: { dpp: 0.5 }, RTY: { dpp: 50 }, GC: { dpp: 100 },
+  MGC: { dpp: 10 }, CL:  { dpp: 1000 },
 };
 
-// Risk/reward targets for prop firm trading (1 contract)
-const STYLE_TARGETS = {
-  "Scalp": {
-    riskDollars: [300, 450],
-    profitDollars: [1000, 1500],
-    description: "Tight scalp — 1 contract, prop firm rules",
-  },
-  "Day Trade": {
-    riskDollars: [400, 600],
-    profitDollars: [1200, 2000],
-    description: "Day trade — 1 contract, clean setup",
-  },
-  "Swing Trade": {
-    riskDollars: [500, 800],
-    profitDollars: [2000, 4000],
-    description: "Swing — 1 contract, overnight hold",
-  },
-};
-
-function getInstrumentSpec(symbol: string) {
-  const clean = symbol.replace(/1!|=F|USDT|USD/gi, "").toUpperCase().trim();
-  return (
-    INSTRUMENT_SPECS[clean] ??
-    INSTRUMENT_SPECS[symbol.toUpperCase()] ??
-    null
-  );
+function getSpec(symbol: string) {
+  const clean = symbol.replace(/1!|=F|USDT|USD|PERP/gi, "").toUpperCase().trim();
+  return INSTRUMENT_SPECS[clean] ?? INSTRUMENT_SPECS[symbol.toUpperCase()] ?? null;
 }
 
 async function compressImage(dataUrl: string): Promise<string> {
@@ -89,8 +60,7 @@ async function compressImage(dataUrl: string): Promise<string> {
       const ratio = Math.min(maxDim / img.width, maxDim / img.height, 1);
       canvas.width = Math.round(img.width * ratio);
       canvas.height = Math.round(img.height * ratio);
-      const ctx = canvas.getContext("2d")!;
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
       resolve(canvas.toDataURL("image/jpeg", 0.92));
     };
     img.src = dataUrl;
@@ -100,65 +70,87 @@ async function compressImage(dataUrl: string): Promise<string> {
 const SCHEMA = `{
   "direction": "LONG" or "SHORT",
   "symbol": "<exact ticker from chart, e.g. NQ1!, MNQ, ES1!, BTCUSDT, EURUSD>",
-  "timeframe": "<exact timeframe, e.g. 1m, 3m, 5m, 15m, 1H, 4H, 1D>",
+  "timeframe": "<exact timeframe from chart label, e.g. 1m, 3m, 5m, 15m, 1H, 4H, 1D>",
   "currentPrice": <current price from right axis — exact number>,
-  "entry": <entry price — at OB edge, FVG midpoint, or key level>,
-  "takeProfits": [<tp1 nearest liquidity target>, <tp2 mid target>, <tp3 extended>],
-  "stopLoss": <SL price — beyond OB invalidation, NO more than maxRiskPoints from entry>,
-  "riskReward": <float R:R e.g. 3.2>,
-  "riskPoints": <distance in points from entry to SL>,
-  "riskDollars": <riskPoints × dollarPerPoint × 1 contract>,
-  "rewardDollars": <(tp2 - entry) × dollarPerPoint × 1 contract, use absolute value>,
+  "entry": <entry price — see entry mode instructions>,
+  "takeProfits": [
+    {"price": <tp1 — nearest logical target>, "probability": <integer 60-85, chance this TP is hit>, "reason": "<why this level — specific liquidity/structure>"},
+    {"price": <tp2 — mid target>, "probability": <integer 35-65>, "reason": "<why>"},
+    {"price": <tp3 — extended target>, "probability": <integer 15-40>, "reason": "<why>"}
+  ],
+  "stopLoss": <SL — behind OB edge or swing, within prop firm risk limits>,
+  "riskReward": <float based on entry→tp2>,
+  "riskPoints": <distance entry→SL in points>,
+  "riskDollars": <riskPoints × dollarPerPoint>,
+  "rewardDollars": <(tp2.price − entry) × dollarPerPoint, absolute value>,
   "confidence": <integer 60-92>,
-  "tradeSetup": "<1 sentence: exact trigger — pattern + level + entry reason>",
-  "reasoning": "<5 sentences: 1) trend structure 2) OB/FVG confluence 3) momentum 4) liquidity target 5) invalidation>",
-  "whyDirection": "<3 numbered reasons for LONG/SHORT, each with exact price level>",
+  "entryMode": "standard" or "fast",
+  "tradeSetup": "<1 sentence — exact trigger: pattern + level + reason>",
+  "reasoning": "<5 sentences: 1-trend 2-OB/FVG confluence 3-momentum 4-liquidity target 5-invalidation>",
+  "whyDirection": "<3 numbered reasons for LONG/SHORT with exact price levels>",
   "keyLevels": [
-    {
-      "type": "order_block"|"fvg"|"liquidity"|"bos"|"choch"|"support"|"resistance",
-      "priceHigh": <upper bound of zone>,
-      "priceLow": <lower bound of zone>,
-      "description": "<e.g. '4H Bearish OB', 'FVG gap', 'Sell-side liquidity', 'BOS at 29120'>"
-    }
+    {"type": "order_block"|"fvg"|"liquidity"|"bos"|"choch"|"support"|"resistance",
+     "priceHigh": <zone top>, "priceLow": <zone bottom>,
+     "description": "<e.g. '4H Bearish OB', 'FVG 29080-29140', 'SSL below 28950'>"}
   ]
 }`;
 
-const SYSTEM_PROMPT = `You are an elite ICT/SMC institutional trader who also coaches prop firm traders.
+const SYSTEM = `You are a senior ICT/SMC institutional trader coaching a prop firm trader.
 
-PROP FIRM CONTEXT — CRITICAL:
-- Trader uses 1 contract. Goal: profit $1,000-1,500 per trade, max risk $300-500.
-- NQ E-mini (NQ1!): $20/point. For $400 risk → max 20 point SL. For $1,200 profit → 60 point TP.
-- MNQ Micro: $2/point. For $400 risk → max 200 point SL. For $1,200 profit → 600 point TP.
-- ES E-mini (ES1!): $50/point. For $400 risk → max 8 point SL. For $1,200 profit → 24 point TP.
-- BTC futures (BTCUSDT/BTC): 1 contract varies — scale SL/TP proportionally.
-- SL must be tight and logical — behind an OB, swing low/high, or FVG. NOT a round number guess.
-- TPs must be at REAL liquidity: equal highs/lows, swing points, previous session highs/lows.
-- R:R minimum 2.5:1. Ideal 3:1 to 5:1. NEVER set TP1 closer than 2× SL distance.
+PROP FIRM RULES — NON-NEGOTIABLE:
+- 1 contract only. Max risk $300-500 per trade.
+- NQ (NQ1!/MNQ): $20/pt. For $400 risk → max 20pt SL. TP1 min 2× SL, TP2 min 4× SL, TP3 min 6× SL.
+- ES (ES1!/MES): $50/pt. For $400 risk → max 8pt SL. TP1 min 16pt, TP2 min 32pt.
+- GC Gold: $100/pt. MNQ: $2/pt. Adjust SL/TP accordingly.
+- R:R minimum 2.5:1 based on TP2. NO exceptions.
+- TPs must be at REAL levels: equal highs/lows, previous session H/L, OB edges, FVG fills.
+- NEVER set TP1 at less than 2× the SL distance from entry.
 
-ANALYSIS FRAMEWORK:
-1. READ CHART: Find ticker (top-left), timeframe label, and current price (right axis) — exact numbers.
-2. MARKET STRUCTURE: HH/HL = bullish, LH/LL = bearish. Mark every BOS and CHoCH with exact price.
-3. ORDER BLOCKS: Last opposing candle before impulse. Give the full zone (high to low of that candle).
-4. FVGs: Three-candle imbalance zone. Give exact high and low of the gap.
-5. LIQUIDITY: Equal highs (buy-side liq), equal lows (sell-side liq), stop-hunt zones.
-6. ENTRY: At OB 50% or upper/lower edge. At FVG fill. After CHoCH confirmation.
-7. SL: Below/above the OB that invalidates the setup. Within prop firm risk limits.
-8. TPs: TP1 = nearest liquidity (min 2× SL distance). TP2 = next major level. TP3 = session extreme.
+ICT/SMC ANALYSIS:
+1. Chart labels: ticker top-left, timeframe label, price on right axis.
+2. Structure: HH/HL = bullish, LH/LL = bearish. Mark exact BOS and CHoCH prices.
+3. Order Blocks: last opposing candle before impulse — give full candle range (high→low).
+4. FVGs: 3-candle imbalance — give exact gap zone (high of candle 1 → low of candle 3 for bearish FVG, reverse for bullish).
+5. Liquidity: equal highs = BSL, equal lows = SSL, stop clusters above/below swing points.
+6. Entry: at OB 50% or OB edge. At FVG midpoint. After CHoCH confirmation.
+7. TP probability: based on how many obstacles (S/R, OBs, FVGs) price must pass through. TP1 nearest clear target = highest probability.
 
 Respond ONLY with valid JSON. No markdown. No text outside JSON.`;
 
-function buildUserPrompt(tradeStyle: string): string {
-  const targets = STYLE_TARGETS[tradeStyle as keyof typeof STYLE_TARGETS] ?? STYLE_TARGETS["Day Trade"];
-  return `Analyze this chart for a ${tradeStyle} setup.
+function modeInstructions(mode: EntryMode, style: string): string {
+  if (mode === "fast") {
+    return `ENTRY MODE: FAST (Market Now)
+- Trader is entering at market RIGHT NOW. Entry = currentPrice (or 1-2 ticks from it).
+- SL must be behind the NEAREST micro structure — within ${style === "Scalp" ? "8-15" : "15-25"} NQ points.
+- TP1 must be reachable within ${style === "Scalp" ? "15-30 minutes" : "2-4 hours"}.
+- Focus on momentum continuation — is price already moving in the direction? If not, note the risk.`;
+  }
+  return `ENTRY MODE: STANDARD (Limit Order)
+- Find the optimal pullback entry at OB edge or FVG fill.
+- Entry is a LIMIT ORDER — price must return to this level.
+- This allows tighter SL and better R:R than market entry.
+- Note how far price must retrace to reach entry.`;
+}
 
-TARGET: Risk $${targets.riskDollars[0]}-${targets.riskDollars[1]}, Profit $${targets.profitDollars[0]}-${targets.profitDollars[1]} on 1 contract.
+function styleContext(style: string): string {
+  const map: Record<string, string> = {
+    "Scalp":       "SCALP: 1m-5m chart. Max hold 30 min. SL 10-20 NQ pts. TP1 20-40pts, TP2 40-70pts, TP3 70-100pts.",
+    "Day Trade":   "DAY TRADE: 15m-1H chart. Max hold 4 hours. SL 20-40 NQ pts. TP1 50-80pts, TP2 100-150pts, TP3 200pts.",
+    "Swing Trade": "SWING: 4H-1D chart. Overnight hold ok. SL 50-100 NQ pts. TP1 100-200pts, TP2 250-400pts, TP3 500pts+.",
+  };
+  return map[style] ?? map["Day Trade"];
+}
 
-STEP 1: Read price axis (right side) → currentPrice
-STEP 2: Read symbol + timeframe from chart labels
-STEP 3: Full ICT/SMC analysis — structure, OBs, FVGs, liquidity
-STEP 4: Find the best ${tradeStyle} setup with prop firm-safe SL/TP
+function buildPrompt(mode: EntryMode, style: string): string {
+  return `Analyze this chart. ${styleContext(style)}
 
-Calculate maxRiskPoints based on the instrument ($20/pt for NQ, $50/pt for ES, etc).
+${modeInstructions(mode, style)}
+
+STEP 1: Read currentPrice from right axis (exact number).
+STEP 2: Read symbol + timeframe from chart labels.
+STEP 3: Full ICT/SMC analysis — structure, OBs with exact zones, FVGs with exact zones, liquidity pools.
+STEP 4: Calculate SL/TP sizes appropriate for the instrument ($20/pt for NQ, $50/pt for ES, etc).
+STEP 5: Assign TP probabilities — TP1 highest (nearest, fewest obstacles), TP3 lowest (most obstacles/distance).
 
 Return JSON:
 ${SCHEMA}`;
@@ -166,23 +158,27 @@ ${SCHEMA}`;
 
 function extractJSON(raw: string): TradeAnalysis | null {
   const clean = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
-  const match = clean.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]) as TradeAnalysis;
-  } catch {
-    return null;
-  }
+  const m = clean.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]) as TradeAnalysis; } catch { return null; }
+}
+
+function normalizeTPs(tps: unknown[]): [TakeProfit, TakeProfit, TakeProfit] {
+  const out: TakeProfit[] = [0, 1, 2].map((i) => {
+    const tp = tps[i];
+    if (typeof tp === "number") return { price: tp, probability: 70 - i * 20, reason: "—" };
+    if (tp && typeof (tp as TakeProfit).price === "number") return tp as TakeProfit;
+    return { price: 0, probability: 0, reason: "—" };
+  });
+  return out as [TakeProfit, TakeProfit, TakeProfit];
 }
 
 function normalize(r: TradeAnalysis): TradeAnalysis {
-  const tps = Array.isArray(r.takeProfits) ? r.takeProfits : [];
-
-  // Recalculate risk/reward dollars using instrument specs if AI missed them
-  const spec = getInstrumentSpec(r.symbol ?? "");
+  const tps = normalizeTPs(Array.isArray(r.takeProfits) ? r.takeProfits : []);
+  const spec = getSpec(r.symbol ?? "");
   const riskPts = r.riskPoints || Math.abs(r.entry - r.stopLoss);
-  const rewardPts = tps[1] ? Math.abs(tps[1] - r.entry) : Math.abs(tps[0] - r.entry);
-  const dpp = spec?.dollarPerPoint ?? 1;
+  const rewardPts = tps[1].price ? Math.abs(tps[1].price - r.entry) : Math.abs(tps[0].price - r.entry);
+  const dpp = spec?.dpp ?? 1;
 
   return {
     ...r,
@@ -191,9 +187,12 @@ function normalize(r: TradeAnalysis): TradeAnalysis {
     currentPrice: r.currentPrice || r.entry,
     tradeSetup: r.tradeSetup || "",
     whyDirection: r.whyDirection || "",
+    entryMode: r.entryMode || "standard",
     riskPoints: +riskPts.toFixed(2),
     riskDollars: r.riskDollars || +(riskPts * dpp).toFixed(0),
     rewardDollars: r.rewardDollars || +(rewardPts * dpp).toFixed(0),
+    riskReward: r.riskReward || +(rewardPts / (riskPts || 1)).toFixed(2),
+    takeProfits: tps,
     keyLevels: Array.isArray(r.keyLevels)
       ? r.keyLevels.map((kl) => ({
           ...kl,
@@ -201,13 +200,13 @@ function normalize(r: TradeAnalysis): TradeAnalysis {
           priceLow: kl.priceLow ?? (kl as unknown as { price: number }).price ?? 0,
         }))
       : [],
-    takeProfits: [tps[0] ?? 0, tps[1] ?? 0, tps[2] ?? 0],
   };
 }
 
 export async function analyzeChart(
   imageDataUrl: string,
   tradeStyle: string,
+  entryMode: EntryMode = "standard",
 ): Promise<TradeAnalysis> {
   const apiKey = getStoredKey();
   if (!apiKey) throw new Error("No OpenAI API key set. Click ⚙ to configure.");
@@ -217,30 +216,27 @@ export async function analyzeChart(
 
   const res = await fetch(OPENAI_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({
       model: "gpt-4o",
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: SYSTEM },
         {
           role: "user",
           content: [
             { type: "image_url", image_url: { url: `data:image/jpeg;base64,${base64}`, detail: "high" } },
-            { type: "text", text: buildUserPrompt(tradeStyle) },
+            { type: "text", text: buildPrompt(entryMode, tradeStyle) },
           ],
         },
       ],
-      max_tokens: 1400,
+      max_tokens: 1500,
       temperature: 0.1,
     }),
   });
 
   if (!res.ok) {
     const err = await res.text();
-    throw new Error(`OpenAI API error ${res.status}: ${err}`);
+    throw new Error(`OpenAI error ${res.status}: ${err}`);
   }
 
   const data = await res.json();
@@ -248,4 +244,41 @@ export async function analyzeChart(
   const parsed = extractJSON(raw);
   if (!parsed?.entry) throw new Error("Could not parse AI response");
   return normalize(parsed);
+}
+
+// News analysis — uses text GPT to summarize today's relevant events
+export async function checkNewsForSymbol(symbol: string): Promise<string> {
+  const apiKey = getStoredKey();
+  if (!apiKey) throw new Error("No OpenAI API key set.");
+
+  const today = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+
+  const res = await fetch(OPENAI_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({
+      model: "gpt-4o",
+      messages: [{
+        role: "user",
+        content: `Today is ${today}. I am trading ${symbol}.
+
+List the key economic news events and releases scheduled for TODAY that could significantly impact ${symbol}. Include:
+- Exact event names (e.g. "CPI Data", "FOMC Minutes", "NFP")
+- Expected impact level (HIGH / MEDIUM / LOW)
+- Scheduled time (EST/ET)
+- Brief note on how it typically affects ${symbol} (bullish/bearish/volatile)
+
+If there are no major events today, say so clearly.
+Also note any ongoing geopolitical or macro themes currently affecting ${symbol}.
+
+Format as a clear bullet list. Be concise — max 200 words.`,
+      }],
+      max_tokens: 400,
+      temperature: 0.3,
+    }),
+  });
+
+  if (!res.ok) throw new Error(`News API error ${res.status}`);
+  const data = await res.json();
+  return data.choices?.[0]?.message?.content ?? "No news data returned.";
 }

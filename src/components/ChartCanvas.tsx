@@ -117,7 +117,7 @@ export function ChartCanvas({ imageUrl, analysis }: Props) {
 
       // ── R:R shaded areas ────────────────────────────────────
       const isLong = analysis.direction === "LONG";
-      const tp1y = yOf(analysis.takeProfits[0]);
+      const tp1y = yOf(analysis.takeProfits[0].price);
       const entryY = yOf(analysis.entry);
       const sly = yOf(analysis.stopLoss);
 
@@ -131,9 +131,12 @@ export function ChartCanvas({ imageUrl, analysis }: Props) {
 
       // ── Entry / TP / SL lines ───────────────────────────────
       analysis.takeProfits.slice().reverse().forEach((tp, i) => {
-        if (!tp) return;
+        const price = typeof tp === "number" ? tp : tp?.price;
+        if (!price) return;
         const idx = 2 - i;
-        drawHLine(ctx, CHART_W, yOf(tp), LINE_COLORS.tp, `TP${idx + 1}  ${fmtP(tp)}`, false, 1.5);
+        const prob = typeof tp === "object" ? tp.probability : null;
+        const label = `TP${idx + 1}${prob ? `  ${prob}%` : ""}  ${fmtP(price)}`;
+        drawHLine(ctx, CHART_W, yOf(price), LINE_COLORS.tp, label, false, 1.5);
       });
       drawHLine(ctx, CHART_W, sly, LINE_COLORS.sl, `SL  ${fmtP(analysis.stopLoss)}`, false, 2);
       drawHLine(ctx, CHART_W, entryY, LINE_COLORS.entry, `ENTRY  ${fmtP(analysis.entry)}`, false, 2);
