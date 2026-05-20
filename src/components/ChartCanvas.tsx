@@ -108,11 +108,13 @@ export function ChartCanvas({ imageUrl, analysis }: Props) {
 
         ctx.restore();
 
-        // Zone label on right
+        // Zone label on right — show timeframe if available
         const labelY = isLine
           ? yOf((kl.priceHigh + kl.priceLow) / 2)
           : top + boxH / 2;
-        drawLabel(ctx, W, labelY, kl.description, borderColor, 10);
+        const tfTag = kl.timeframe ? `[${kl.timeframe}] ` : "";
+        const shortDesc = kl.description.length > 28 ? kl.description.slice(0, 26) + "…" : kl.description;
+        drawLabel(ctx, W, labelY, tfTag + shortDesc, borderColor, 10);
       }
 
       // ── R:R shaded areas ────────────────────────────────────

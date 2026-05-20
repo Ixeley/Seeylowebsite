@@ -9,6 +9,7 @@ export interface KeyLevel {
   priceHigh: number;
   priceLow: number;
   description: string;
+  timeframe?: string;
 }
 
 export type EntryMode = "standard" | "fast";
@@ -39,6 +40,7 @@ export interface TradeAnalysis {
   marketCondition?: string;
   newsContext?: string;
   keyLevels: KeyLevel[];
+  annotateChartIndex?: number;
 }
 
 const INSTRUMENT_DPP: Record<string, number> = {

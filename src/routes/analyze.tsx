@@ -6,6 +6,7 @@ import { Footer } from "@/components/Footer";
 import { ParticleBackground } from "@/components/ParticleBackground";
 import { AnalysisResult } from "@/components/AnalysisResult";
 import { ChartCanvas } from "@/components/ChartCanvas";
+import { ChartCanvas } from "@/components/ChartCanvas";
 import {
   analyzeChart, checkNewsForSymbol, getCurrentSession, getPlanSlotCount, SLOT_TIMEFRAMES,
   type TradeAnalysis, type EntryMode, type Plan,
@@ -295,12 +296,14 @@ function AnalyzePage() {
                   );
                 }
 
+                const isAnnotated = analysis && (analysis.annotateChartIndex ?? uploadedImages.length - 1) === slot;
                 return (
                   <ImageSlot
                     key={slot}
                     slot={slot}
                     tf={tf}
                     image={img}
+                    analysis={isAnnotated ? analysis : undefined}
                     dragging={draggingSlot === slot}
                     inputRef={inputRefs[slot]}
                     compact={unlockedSlots >= 2}
@@ -335,22 +338,6 @@ function AnalyzePage() {
             {loading && <LoadingState step={loadingStep} chartCount={uploadedImages.length} />}
             {!loading && analysis && (
               <>
-                {/* Symbol info banner */}
-                {analysis.symbol && (
-                  <div className="glass rounded-xl px-4 py-3 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <span className="font-mono font-bold text-lg text-foreground">{analysis.symbol}</span>
-                      {analysis.symbolDescription && (
-                        <span className="text-xs text-muted-foreground">{analysis.symbolDescription}</span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <div className={`h-2 w-2 rounded-full ${analysis.confidence >= 70 ? "bg-bullish" : analysis.confidence >= 55 ? "bg-yellow-400" : "bg-bearish"}`} />
-                      <span className="text-sm font-mono font-semibold">{analysis.confidence}%</span>
-                      <span className="text-xs text-muted-foreground">confidence</span>
-                    </div>
-                  </div>
-                )}
 
                 {/* News warning */}
                 {analysis.waitForNews && analysis.upcomingNews && (
@@ -412,10 +399,10 @@ function AnalyzePage() {
 }
 
 function ImageSlot({
-  slot, tf, image, dragging, inputRef, compact, onFile, onRemove, onDragChange,
+  slot, tf, image, analysis, dragging, inputRef, compact, onFile, onRemove, onDragChange,
 }: {
-  slot: number; tf: string; image: string | null; dragging: boolean;
-  inputRef: React.RefObject<HTMLInputElement | null>; compact: boolean;
+  slot: number; tf: string; image: string | null; analysis?: TradeAnalysis;
+  dragging: boolean; inputRef: React.RefObject<HTMLInputElement | null>; compact: boolean;
   onFile: (f: File, slot: number) => void;
   onRemove: (slot: number) => void;
   onDragChange: (v: boolean) => void;
@@ -427,9 +414,15 @@ function ImageSlot({
       <div className={`glass-strong rounded-2xl p-2 relative group ${minH} flex flex-col`}>
         <div className="flex items-center justify-between px-2 py-1 mb-1">
           <span className="text-[10px] font-mono text-muted-foreground">Chart {slot + 1}</span>
-          {tf && <span className="text-[10px] rounded-full border border-primary/40 bg-primary/10 text-primary px-2 py-0.5 font-mono">{tf}</span>}
+          <div className="flex items-center gap-1.5">
+            {analysis && <span className="text-[10px] text-primary font-semibold">● annotated</span>}
+            {tf && <span className="text-[10px] rounded-full border border-primary/40 bg-primary/10 text-primary px-2 py-0.5 font-mono">{tf}</span>}
+          </div>
         </div>
-        <img src={image} alt={`Chart ${slot + 1}`} className="w-full flex-1 rounded-xl object-contain border border-border" style={{ maxHeight: compact ? "120px" : "360px" }} />
+        {analysis
+          ? <ChartCanvas imageUrl={image} analysis={analysis} />
+          : <img src={image} alt={`Chart ${slot + 1}`} className="w-full flex-1 rounded-xl object-contain border border-border" style={{ maxHeight: compact ? "120px" : "360px" }} />
+        }
         <button
           onClick={() => onRemove(slot)}
           className="absolute top-3 right-3 h-6 w-6 rounded-full bg-background/80 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition hover:bg-muted"
