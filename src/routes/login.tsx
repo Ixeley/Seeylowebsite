@@ -29,11 +29,10 @@ function LoginPage() {
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
   ];
 
-  // Redirect if already logged in with profile
+  // Redirect if already logged in
   useEffect(() => {
-    if (user && profile) navigate({ to: "/analyze" });
-    else if (user && !profile) navigate({ to: "/onboard" });
-  }, [user, profile]);
+    if (user) navigate({ to: "/dashboard" });
+  }, [user]);
 
   // Resend countdown
   useEffect(() => {
