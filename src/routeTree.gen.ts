@@ -11,6 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SuccessRouteImport } from './routes/success'
 import { Route as PricingRouteImport } from './routes/pricing'
+import { Route as OnboardRouteImport } from './routes/onboard'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as CancelRouteImport } from './routes/cancel'
 import { Route as AnalyzeRouteImport } from './routes/analyze'
@@ -24,6 +26,16 @@ const SuccessRoute = SuccessRouteImport.update({
 const PricingRoute = PricingRouteImport.update({
   id: '/pricing',
   path: '/pricing',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const OnboardRoute = OnboardRouteImport.update({
+  id: '/onboard',
+  path: '/onboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardRoute = DashboardRouteImport.update({
@@ -52,6 +64,8 @@ export interface FileRoutesByFullPath {
   '/analyze': typeof AnalyzeRoute
   '/cancel': typeof CancelRoute
   '/dashboard': typeof DashboardRoute
+  '/login': typeof LoginRoute
+  '/onboard': typeof OnboardRoute
   '/pricing': typeof PricingRoute
   '/success': typeof SuccessRoute
 }
@@ -60,6 +74,8 @@ export interface FileRoutesByTo {
   '/analyze': typeof AnalyzeRoute
   '/cancel': typeof CancelRoute
   '/dashboard': typeof DashboardRoute
+  '/login': typeof LoginRoute
+  '/onboard': typeof OnboardRoute
   '/pricing': typeof PricingRoute
   '/success': typeof SuccessRoute
 }
@@ -69,6 +85,8 @@ export interface FileRoutesById {
   '/analyze': typeof AnalyzeRoute
   '/cancel': typeof CancelRoute
   '/dashboard': typeof DashboardRoute
+  '/login': typeof LoginRoute
+  '/onboard': typeof OnboardRoute
   '/pricing': typeof PricingRoute
   '/success': typeof SuccessRoute
 }
@@ -79,16 +97,28 @@ export interface FileRouteTypes {
     | '/analyze'
     | '/cancel'
     | '/dashboard'
+    | '/login'
+    | '/onboard'
     | '/pricing'
     | '/success'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/analyze' | '/cancel' | '/dashboard' | '/pricing' | '/success'
+  to:
+    | '/'
+    | '/analyze'
+    | '/cancel'
+    | '/dashboard'
+    | '/login'
+    | '/onboard'
+    | '/pricing'
+    | '/success'
   id:
     | '__root__'
     | '/'
     | '/analyze'
     | '/cancel'
     | '/dashboard'
+    | '/login'
+    | '/onboard'
     | '/pricing'
     | '/success'
   fileRoutesById: FileRoutesById
@@ -98,6 +128,8 @@ export interface RootRouteChildren {
   AnalyzeRoute: typeof AnalyzeRoute
   CancelRoute: typeof CancelRoute
   DashboardRoute: typeof DashboardRoute
+  LoginRoute: typeof LoginRoute
+  OnboardRoute: typeof OnboardRoute
   PricingRoute: typeof PricingRoute
   SuccessRoute: typeof SuccessRoute
 }
@@ -116,6 +148,20 @@ declare module '@tanstack/react-router' {
       path: '/pricing'
       fullPath: '/pricing'
       preLoaderRoute: typeof PricingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/onboard': {
+      id: '/onboard'
+      path: '/onboard'
+      fullPath: '/onboard'
+      preLoaderRoute: typeof OnboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dashboard': {
@@ -154,6 +200,8 @@ const rootRouteChildren: RootRouteChildren = {
   AnalyzeRoute: AnalyzeRoute,
   CancelRoute: CancelRoute,
   DashboardRoute: DashboardRoute,
+  LoginRoute: LoginRoute,
+  OnboardRoute: OnboardRoute,
   PricingRoute: PricingRoute,
   SuccessRoute: SuccessRoute,
 }
