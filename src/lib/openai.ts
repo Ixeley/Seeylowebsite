@@ -17,8 +17,11 @@ export type Plan = "free" | "basic" | "pro" | "platinum";
 export interface TradeAnalysis {
   noTrade?: boolean;
   noTradeReason?: string;
+  waitForNews?: boolean;
+  upcomingNews?: string | null;
   direction: "LONG" | "SHORT";
   symbol: string;
+  symbolDescription?: string;
   timeframe: string;
   currentPrice: number;
   entry: number;
@@ -34,6 +37,7 @@ export interface TradeAnalysis {
   reasoning: string;
   whyDirection: string;
   marketCondition?: string;
+  newsContext?: string;
   keyLevels: KeyLevel[];
 }
 

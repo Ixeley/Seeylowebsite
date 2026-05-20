@@ -130,6 +130,18 @@ export function AnalysisResult({ analysis: a, tradeStyle, onReset, onReanalyze }
         </div>
       )}
 
+      {/* Market condition + news context */}
+      {(a.marketCondition || a.newsContext) && (
+        <div className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 space-y-1.5">
+          {a.marketCondition && (
+            <p className="text-xs text-muted-foreground"><span className="text-foreground/70 font-medium">Market: </span>{a.marketCondition}</p>
+          )}
+          {a.newsContext && (
+            <p className="text-xs text-muted-foreground"><span className="text-foreground/70 font-medium">News: </span>{a.newsContext}</p>
+          )}
+        </div>
+      )}
+
       {/* Technical reasoning */}
       <div>
         <button onClick={() => setReasoningOpen(!reasoningOpen)} className="w-full flex items-center justify-between rounded-lg border border-border bg-muted/30 px-4 py-3 text-sm hover:bg-muted/50 transition">

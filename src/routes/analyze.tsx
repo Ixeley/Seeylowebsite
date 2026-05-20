@@ -102,6 +102,9 @@ function AnalyzePage() {
       clearInterval(stepInterval);
       setAnalysis(result);
 
+      if (result.waitForNews && result.upcomingNews) {
+        toast.warning("News incoming — hold your entry!", { description: result.upcomingNews, duration: 8000 });
+      }
       if (result.noTrade) {
         toast.warning(`No-trade conditions detected`, { description: result.noTradeReason ?? "Check reasoning below" });
       } else {
@@ -332,6 +335,34 @@ function AnalyzePage() {
             {loading && <LoadingState step={loadingStep} chartCount={uploadedImages.length} />}
             {!loading && analysis && (
               <>
+                {/* Symbol info banner */}
+                {analysis.symbol && (
+                  <div className="glass rounded-xl px-4 py-3 flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <span className="font-mono font-bold text-lg text-foreground">{analysis.symbol}</span>
+                      {analysis.symbolDescription && (
+                        <span className="text-xs text-muted-foreground">{analysis.symbolDescription}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <div className={`h-2 w-2 rounded-full ${analysis.confidence >= 70 ? "bg-bullish" : analysis.confidence >= 55 ? "bg-yellow-400" : "bg-bearish"}`} />
+                      <span className="text-sm font-mono font-semibold">{analysis.confidence}%</span>
+                      <span className="text-xs text-muted-foreground">confidence</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* News warning */}
+                {analysis.waitForNews && analysis.upcomingNews && (
+                  <div className="rounded-xl border border-yellow-400/50 bg-yellow-400/10 px-4 py-3 flex items-start gap-3 animate-fade-up">
+                    <AlertTriangle className="h-5 w-5 text-yellow-400 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-semibold text-yellow-400">Hold your entry — news incoming</p>
+                      <p className="text-xs text-yellow-300/80 mt-0.5">{analysis.upcomingNews}</p>
+                    </div>
+                  </div>
+                )}
+
                 {analysis.noTrade ? (
                   <NoTradeCard reason={analysis.noTradeReason ?? "Conditions not favorable"} onReset={reset} />
                 ) : (

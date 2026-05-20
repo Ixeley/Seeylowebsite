@@ -1,83 +1,110 @@
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
 const SESSION_INFO = {
-  Asian:    "MARKET SESSION: Asian / Tokyo (00:00–08:00 UTC). Low liquidity on USD pairs. JPY pairs most active. Watch for Asian range manipulation — London often sweeps these highs/lows at open.",
-  London:   "MARKET SESSION: London open (07:00–12:00 UTC). High volatility. Best for EUR, GBP, gold. London frequently sweeps Asian session highs/lows before true directional move.",
-  "NY AM":  "MARKET SESSION: New York AM (13:00–17:00 UTC). Peak global liquidity. Best for US indices (NQ, ES, YM, RTY) and USD pairs. Most institutional volume here. High probability for clean ICT setups.",
-  "NY PM":  "MARKET SESSION: New York PM (17:00–21:00 UTC). Liquidity dropping. Avoid new positions unless continuation of strong NY AM move.",
-  Overlap:  "MARKET SESSION: London/NY overlap (13:00–16:00 UTC). Absolute peak liquidity. Highest probability setups. Both London and NY institutions active.",
-  "Off-hours": "MARKET SESSION: Off-hours (21:00–00:00 UTC). Minimal liquidity. Very low probability setups. Recommend WAIT — conditions not favorable for new trades.",
+  Asian:       "MARKET SESSION: Asian/Tokyo (00:00–08:00 UTC). Low liquidity on USD pairs. JPY pairs most active. London often sweeps Asian highs/lows at open — watch for manipulation before direction.",
+  London:      "MARKET SESSION: London open (07:00–12:00 UTC). High volatility. Best for EUR, GBP, XAU. London frequently sweeps Asian session highs/lows before true directional move.",
+  "NY AM":     "MARKET SESSION: New York AM (13:00–17:00 UTC). Peak global liquidity. Best session for US indices (NQ, ES, YM, RTY) and USD pairs. Most institutional volume. Highest probability ICT setups.",
+  "NY PM":     "MARKET SESSION: New York PM (17:00–21:00 UTC). Liquidity dropping. Only take setups that are continuation of strong NY AM move. Avoid new positions.",
+  Overlap:     "MARKET SESSION: London/NY Overlap (13:00–16:00 UTC). Absolute peak liquidity. Both London and NY institutions active. Highest probability session for all instruments.",
+  "Off-hours": "MARKET SESSION: Off-hours (21:00–00:00 UTC). Minimal liquidity. Spreads wide. Strongly recommend NO new trades — flag noTrade=true unless exceptionally clear setup.",
 };
 
 const SCHEMA = `{
-  "noTrade": <true if conditions are not favorable — see rules>,
-  "noTradeReason": <string if noTrade=true, null otherwise — e.g. "Choppy/ranging: no clear structure bias", "Overextended: price needs retracement first", "Low confidence: mixed signals">,
+  "noTrade": <true if ANY no-trade condition applies>,
+  "noTradeReason": "<string explaining why not to trade, or null>",
+  "waitForNews": <true if major news event is within 60 minutes>,
+  "upcomingNews": "<description of upcoming news e.g. 'CPI in 35 min (14:30 EST) — HIGH impact, avoid new entries' or null>",
   "direction": "LONG" or "SHORT",
-  "symbol": "<ticker from chart label, e.g. NQ1!, ES1!, BTCUSDT, EURUSD, XAUUSD>",
-  "timeframe": "<timeframe from chart label, e.g. 1m, 5m, 15m, 1H, 4H, 1D>",
-  "currentPrice": <exact price from right axis>,
-  "entry": <entry price — OB edge, FVG midpoint, or current price if fast mode>,
+  "symbol": "<EXACT ticker as written on the chart — read it character by character from the chart label, e.g. NQ1!, MNQ, ES1!, BTCUSDT, EURUSD, XAUUSD, GC1!, QQQ>",
+  "symbolDescription": "<what this instrument is, e.g. 'Nasdaq-100 E-mini Futures', 'Bitcoin/USDT Perpetual', 'Gold Futures', 'EUR/USD Forex'>",
+  "timeframe": "<exact timeframe label from chart, e.g. 1m, 3m, 5m, 15m, 30m, 1H, 2H, 4H, 1D>",
+  "currentPrice": <exact number from right price axis — read carefully>,
+  "entry": <see entry mode instructions>,
   "takeProfits": [
-    {"price": <tp1 — nearest real target>, "probability": <integer, realistic — see rules>, "reason": "<exact level: e.g. 'Equal highs BSL @ 19920' or '4H FVG fill 19850-19880'>"},
-    {"price": <tp2 — next logical target>, "probability": <integer, must be less than TP1>, "reason": "<why>"},
-    {"price": <tp3 — extended target>, "probability": <integer, must be less than TP2>, "reason": "<why>"}
+    {"price": <tp1 nearest real target>, "probability": <integer — count obstacles>, "reason": "<specific level with price e.g. 'BSL equal highs @ 19,920'>"},
+    {"price": <tp2>, "probability": <must be 10-20% less than TP1>, "reason": "<specific>"},
+    {"price": <tp3 extended>, "probability": <must be 10-20% less than TP2>, "reason": "<specific>"}
   ],
-  "stopLoss": <behind real structure — OB low/high, swing point>,
-  "riskReward": <float, must be ≥ 2.5 based on TP2>,
-  "riskPoints": <distance entry to SL in points>,
-  "riskDollars": <riskPoints × instrument dollar-per-point>,
-  "rewardDollars": <distance entry to TP2 × dollar-per-point>,
-  "confidence": <integer 45-92 — be HONEST, not always high>,
+  "stopLoss": <behind structure — OB edge, swing low/high>,
+  "riskReward": <float ≥ 2.5 based on entry→TP2>,
+  "riskPoints": <|entry - stopLoss| in points>,
+  "riskDollars": <riskPoints × dollarPerPoint>,
+  "rewardDollars": <|entry - tp2| × dollarPerPoint>,
+  "confidence": <integer 40-92 — HONEST assessment, most setups 55-78>,
   "entryMode": "standard" or "fast",
-  "tradeSetup": "<1 sentence: exact trigger with price levels — e.g. 'Short from 4H Bearish OB at 19880-19910, targeting SSL at 19720 after CHoCH confirmed at 19840'>",
-  "reasoning": "<5 sentences: 1) market structure & trend 2) OB/FVG confluence with exact zones 3) momentum & indicators 4) liquidity target logic 5) invalidation scenario>",
-  "whyDirection": "<3 numbered points for LONG/SHORT, each with an exact price level>",
-  "marketCondition": "<1 sentence: current condition — e.g. 'Trending bullish on 4H, retracing into discount for long opportunity' or 'Choppy consolidation, wait for breakout'>",
+  "tradeSetup": "<1 sentence with exact prices — e.g. 'Short from 4H Bearish OB 19,880–19,910 after CHoCH at 19,840, targeting SSL 19,720'>",
+  "reasoning": "<5 sentences: 1) trend/structure with BOS prices 2) OB/FVG with exact zones 3) momentum confluence 4) liquidity target logic 5) what invalidates the setup>",
+  "whyDirection": "<3 numbered points each with exact price — e.g. '1. BOS bearish at 19,840 confirmed LH/LL structure'>",
+  "marketCondition": "<1 sentence: current market state — trending/ranging/consolidating/overextended>",
+  "newsContext": "<1-2 sentences: relevant macro/news context for this symbol right now — any known events affecting it today>",
   "keyLevels": [
-    {"type": "order_block"|"fvg"|"liquidity"|"bos"|"choch"|"support"|"resistance", "priceHigh": <zone top>, "priceLow": <zone bottom>, "description": "<e.g. '4H Bearish OB: 19880-19910' or 'BSL: Equal highs at 19950'>"}
+    {"type": "order_block"|"fvg"|"liquidity"|"bos"|"choch"|"support"|"resistance", "priceHigh": <zone top>, "priceLow": <zone bottom>, "description": "<precise description with prices>"}
   ]
 }`;
 
-const SYSTEM = `You are a senior ICT/Smart Money Concepts institutional trader with 15+ years on prop firm desks.
-You are brutally honest — you tell traders when NOT to trade, not just when to enter.
+const SYSTEM = `You are a senior institutional trader with 15+ years on prop firm desks, specializing in ICT (Inner Circle Trader) and Smart Money Concepts (SMC). You have deep knowledge of:
+- Market microstructure: how institutions accumulate positions, create liquidity, and induce retail traders
+- ICT concepts: PD Arrays (OBs, FVGs, Breaker Blocks, Mitigation Blocks), liquidity (BSL/SSL), PO3 (Power of Three), Judas Swings
+- Sessions: Asian range, London open manipulation, NY killzones (9:30-11:00, 13:30-16:00 EST)
+- News trading: FOMC, NFP, CPI effects on different instruments
+- Prop firm rules: max drawdown, daily loss limits, position sizing
 
-INSTRUMENT SPECS (dollar per point):
-NQ/NQ1!: $20/pt, MNQ: $2/pt, ES/ES1!: $50/pt, MES: $5/pt
-YM: $5/pt, MYM: $0.5/pt, RTY: $50/pt, GC: $100/pt, MGC: $10/pt, CL: $1000/pt
+You are brutally honest — you WARN traders when conditions are not right. Missing a trade protects capital. You always think like an institution, not retail.
 
-PROP FIRM RULES — NON-NEGOTIABLE:
-- 1 contract only. Max risk $400 per trade.
-- NQ: max 20pt SL → TP1 min 40pt, TP2 min 80pt, TP3 min 120pt
-- ES: max 8pt SL → TP1 min 20pt, TP2 min 40pt
-- R:R minimum 2.5:1 (entry→TP2). NEVER below this.
+INSTRUMENT SPECS ($ per point):
+NQ/NQ1!: $20/pt | MNQ: $2/pt | ES/ES1!: $50/pt | MES: $5/pt
+YM: $5/pt | MYM: $0.5/pt | RTY: $50/pt | GC/GC1!: $100/pt | MGC: $10/pt | CL: $1000/pt
+Forex/Crypto: $1/pip or $1/unit (use 1 if unknown)
 
-NO-TRADE CONDITIONS — you MUST flag these:
-- Mid-range price with no structure bias → noTrade: true
-- Price already ran 3×+ average candle without pullback → overextended, wait
-- No OB or FVG within entry zone → no confluence, skip
-- Confidence < 55 after analysis → too uncertain, skip
-- Off-hours session + no strong trend → flag it
+PROP FIRM RULES (non-negotiable):
+- 1 contract. Max $400 risk/trade.
+- R:R ≥ 2.5:1 (based on TP2). Never below.
+- SL behind REAL structure only — not arbitrary.
 
-REALISTIC PROBABILITY RULES:
-- Count structure obstacles (OBs, FVGs, S/R, previous highs/lows) between entry and each TP
+NO-TRADE CONDITIONS (check every time):
+- Mid-range, no structural bias → choppy, wait
+- Price ran 3×+ avg candle size without retracement → overextended, wait for pullback
+- No OB or FVG near entry → no ICT confluence, skip
+- Confidence < 55 after full analysis → too uncertain, skip
+- Off-hours session unless very clear trend → skip
+- Major news within 60 min → flag waitForNews=true
+
+SYMBOL READING (critical):
+- Read the EXACT ticker symbol character by character from the chart label
+- Common formats: NQ1!, ES1!, BTCUSDT, EURUSD, XAUUSD, GC1!, QQQ, SPY
+- Never guess — if unclear, write what you can see most clearly
+- Also identify what the instrument IS (futures, forex, crypto, stock)
+
+FAST MODE ENTRY RULE:
+- NOT exact market price — find nearest micro-structure (1m OB, micro FVG, micro CHoCH) within 3-8 ticks of currentPrice
+- Entry = edge of that micro-structure toward the trade direction
+- If no micro-structure within 8 ticks → entry = currentPrice ± 3 ticks (in direction)
+- This is a tight limit order near market, NOT a market order
+
+REALISTIC PROBABILITIES:
+- Count structural obstacles (OBs, FVGs, prior S/R, swing points) between entry and each TP
 - TP1: 0 obstacles=78-85%, 1=65-74%, 2+=50-62%
-- TP2: always 12-20% lower than TP1
-- TP3: always 12-20% lower than TP2
-- Session penalty: -10% for Asian session on USD pairs, -15% for off-hours
-- News/event day: -10% across all TPs
-- Probabilities must differ by at least 10% between TPs — NEVER similar values
+- TP2: always 12-20% lower than TP1. Max 70%.
+- TP3: always 12-20% lower than TP2. Max 50%.
+- Session penalty: -10% Asian (USD pairs), -15% Off-hours
+- Upcoming news: -12% all TPs if news within 2 hours
+- TPs MUST decrease meaningfully — never similar values
 
-ICT/SMC ANALYSIS FRAMEWORK:
-1. Read symbol and timeframe from chart labels
-2. Structure: Identify swing H/L, mark HH/HL (bullish) or LH/LL (bearish), find BOS and CHoCH with exact prices
-3. Premium/Discount: >50% of last swing = premium (sell zone), <50% = discount (buy zone)
-4. Order Blocks: Last opposing candle before impulse move. Bullish OB = last bearish candle before up-impulse. Give full zone high→low.
-5. FVGs: 3-candle imbalance. Bullish FVG = candle1.low to candle3.high. Bearish FVG = candle1.high to candle3.low.
-6. Liquidity: Equal highs=BSL, equal lows=SSL, stop clusters obvious at swing points
-7. Entry: At OB 50% or edge, FVG midpoint, after CHoCH. NEVER in open air.
-8. When multiple charts provided: analyze each timeframe, confirm direction across all, use smallest TF for entry precision
+ICT/SMC FRAMEWORK:
+1. Structure: HH/HL = bullish, LH/LL = bearish. Mark exact BOS/CHoCH prices. Premium (>50% swing) vs Discount (<50% swing).
+2. OBs: Last opposing candle before impulse. Bullish OB = last bearish candle before up-move. Give full zone (high→low).
+3. FVGs: 3-candle imbalance. Bullish FVG = c1.low to c3.high. Bearish FVG = c1.high to c3.low.
+4. Liquidity: Equal highs = BSL target for longs. Equal lows = SSL target for shorts. Obvious stop clusters above/below swing points.
+5. Killzones: 9:30-11:00 EST and 13:30-16:00 EST are highest probability.
+6. Entry: OB 50% or edge. FVG midpoint. After CHoCH confirmation. Never in open air.
+7. Multi-chart: Higher TF = bias. Lower TF = precision entry.
 
-Respond ONLY with valid JSON. No markdown. No text outside JSON.`;
+NEWS AWARENESS:
+- Based on your knowledge of typical economic calendar, flag any HIGH-impact events scheduled for today
+- If event is within 60 min of current time → waitForNews=true, noTrade=true
+- Always mention macro context for the symbol in newsContext field
+
+Respond ONLY with valid JSON matching the schema. No markdown. No text outside JSON.`;
 
 function sessionFromUTC() {
   const h = new Date().getUTCHours();
@@ -89,50 +116,62 @@ function sessionFromUTC() {
   return "Off-hours";
 }
 
-function buildPrompt(tradeStyle, entryMode, plan, chartCount) {
+function buildPrompt(tradeStyle, entryMode, chartCount) {
   const session = sessionFromUTC();
   const sessionNote = SESSION_INFO[session] ?? SESSION_INFO["Off-hours"];
+  const now = new Date();
+  const timeStr = now.toUTCString();
+  const estHour = (now.getUTCHours() - 5 + 24) % 24;
+  const estStr = `${estHour}:${String(now.getUTCMinutes()).padStart(2, "0")} EST`;
 
   const styleMap = {
-    "Scalp":       { horizon: "1m-5m", hold: "5-30 min", slPts: "8-20 NQ pts" },
-    "Day Trade":   { horizon: "15m-1H", hold: "1-4 hours", slPts: "20-45 NQ pts" },
-    "Swing Trade": { horizon: "4H-1D", hold: "overnight to multi-day", slPts: "50-120 NQ pts" },
+    "Scalp":       { horizon: "1m–5m", hold: "5–30 min", slRange: "8–20 NQ pts" },
+    "Day Trade":   { horizon: "15m–1H", hold: "1–4 hours", slRange: "20–45 NQ pts" },
+    "Swing Trade": { horizon: "4H–1D", hold: "overnight to multi-day", slRange: "50–120 NQ pts" },
   };
   const style = styleMap[tradeStyle] ?? styleMap["Day Trade"];
 
   const entryInstr = entryMode === "fast"
-    ? `ENTRY MODE: FAST (market order NOW)\n- Enter at currentPrice ± 1-2 ticks. No waiting for pullback.\n- SL: nearest micro-structure, max ${tradeStyle === "Scalp" ? "12" : "22"} NQ pts.\n- Only valid if price shows CLEAR momentum in direction right now.`
-    : `ENTRY MODE: STANDARD (limit order)\n- Set limit at OB edge or FVG midpoint — price must retrace there.\n- This gives tighter SL and better R:R. Note retracement distance.`;
+    ? `ENTRY MODE: FAST (near-market limit)
+- DO NOT use exact market price as entry.
+- Find the nearest 1m OB, micro FVG, or micro CHoCH within 3-8 ticks of currentPrice.
+- Entry = edge of that micro-structure (closest point to currentPrice).
+- If none found within 8 ticks → entry = currentPrice ± 3 ticks toward trade direction.
+- This creates a tight limit order that gets filled on a micro-pullback.
+- SL: behind nearest micro-structure, max ${tradeStyle === "Scalp" ? "12" : "22"} NQ pts from entry.`
+    : `ENTRY MODE: STANDARD (limit order at key level)
+- Entry at OB edge or FVG midpoint — price must retrace to this zone.
+- Tighter SL and better R:R than fast entry.
+- State clearly how far price must retrace from currentPrice to reach entry.`;
 
-  const multiChartInstr = chartCount > 1
-    ? `\nMULTI-TIMEFRAME ANALYSIS (${chartCount} charts provided):
-- Chart 1: higher timeframe — determine overall bias/structure
-- Chart 2: intermediate timeframe — find precise entry zone
-${chartCount > 2 ? "- Chart 3: lowest timeframe — pinpoint exact entry, confirm momentum" : ""}
-- Your entry/SL/TP must be based on the LOWEST timeframe chart
-- Overall direction must be confirmed on ALL timeframes — if they conflict, noTrade=true`
+  const multiChart = chartCount > 1
+    ? `\nMULTI-TIMEFRAME (${chartCount} charts):
+- Chart 1 = higher TF: determine overall bias and key zones
+- Chart 2 = lower TF: precision entry zone${chartCount > 2 ? "\n- Chart 3 = lowest TF: exact entry candle and momentum" : ""}
+- Direction must align on ALL timeframes — if conflict → noTrade=true
+- SL/TP based on lowest TF chart`
     : "";
 
-  return `Analyze this ${tradeStyle} setup.
-
+  return `Current time: ${timeStr} (${estStr})
 ${sessionNote}
 
 TRADE STYLE: ${tradeStyle}
-- Chart timeframes: ${style.horizon}
-- Expected hold: ${style.hold}
-- Typical SL: ${style.slPts}
+Timeframes: ${style.horizon} | Hold: ${style.hold} | SL range: ${style.slRange}
 
 ${entryInstr}
-${multiChartInstr}
+${multiChart}
 
-STEP 1: Read currentPrice from right price axis.
-STEP 2: Read symbol + timeframe from chart labels.
-STEP 3: Check NO-TRADE conditions first — if any apply, return noTrade=true immediately with reason.
-STEP 4: Full ICT/SMC structure analysis with exact price levels.
-STEP 5: Calculate realistic probabilities (count obstacles for each TP target).
-STEP 6: Verify R:R ≥ 2.5 — if not achievable, noTrade=true.
+ANALYSIS STEPS:
+1. READ symbol EXACTLY as shown on chart — every character
+2. READ current price from right axis precisely
+3. CHECK no-trade conditions (ranging? overextended? news coming? low confidence?)
+4. CHECK economic calendar: any HIGH-impact news for this symbol in next 2 hours? → flag it
+5. Full ICT/SMC structure analysis with exact price levels
+6. Calculate entry using ${entryMode === "fast" ? "nearest micro-structure within 8 ticks of currentPrice" : "OB/FVG level"}
+7. Count TP obstacles, assign realistic declining probabilities
+8. Verify R:R ≥ 2.5 — if not → noTrade=true
 
-Return JSON:
+Return this exact JSON schema:
 ${SCHEMA}`;
 }
 
@@ -140,34 +179,23 @@ exports.handler = async (event) => {
   if (event.httpMethod !== "POST") return { statusCode: 405, body: "Method Not Allowed" };
 
   const apiKey = process.env.OPENAI_API_KEY;
-  if (!apiKey) return { statusCode: 500, body: JSON.stringify({ error: "OpenAI API key not configured" }) };
+  if (!apiKey) return { statusCode: 500, body: JSON.stringify({ error: "OpenAI API key not configured on server" }) };
 
   let body;
-  try {
-    body = JSON.parse(event.body);
-  } catch {
-    return { statusCode: 400, body: "Invalid JSON" };
-  }
+  try { body = JSON.parse(event.body); }
+  catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
   const { images, tradeStyle, entryMode, plan } = body;
-  if (!Array.isArray(images) || images.length === 0) {
+  if (!Array.isArray(images) || images.length === 0)
     return { statusCode: 400, body: "No images provided" };
-  }
-
-  const imageContents = images.map((img) => ({
-    type: "image_url",
-    image_url: { url: img, detail: "high" },
-  }));
-
-  const prompt = buildPrompt(tradeStyle ?? "Day Trade", entryMode ?? "standard", plan ?? "basic", images.length);
 
   const messages = [
     { role: "system", content: SYSTEM },
     {
       role: "user",
       content: [
-        ...imageContents,
-        { type: "text", text: prompt },
+        ...images.map((img) => ({ type: "image_url", image_url: { url: img, detail: "high" } })),
+        { type: "text", text: buildPrompt(tradeStyle ?? "Day Trade", entryMode ?? "standard", images.length) },
       ],
     },
   ];
@@ -176,12 +204,12 @@ exports.handler = async (event) => {
     const res = await fetch(OPENAI_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: "gpt-4o", messages, max_tokens: 1800, temperature: 0.1 }),
+      body: JSON.stringify({ model: "gpt-4o", messages, max_tokens: 2000, temperature: 0.1 }),
     });
 
     if (!res.ok) {
       const err = await res.text();
-      return { statusCode: res.status, body: JSON.stringify({ error: `OpenAI error: ${err}` }) };
+      return { statusCode: res.status, body: JSON.stringify({ error: `OpenAI: ${err}` }) };
     }
 
     const data = await res.json();
@@ -190,11 +218,7 @@ exports.handler = async (event) => {
     const match = clean.match(/\{[\s\S]*\}/);
     if (!match) return { statusCode: 500, body: JSON.stringify({ error: "Could not parse AI response" }) };
 
-    return {
-      statusCode: 200,
-      headers: { "Content-Type": "application/json" },
-      body: match[0],
-    };
+    return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: match[0] };
   } catch (err) {
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
   }
