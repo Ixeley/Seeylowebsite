@@ -212,7 +212,7 @@ function LoginPage() {
               </div>
 
               {/* OTP inputs */}
-              <div className="flex gap-2 justify-center" onPaste={handleOtpPaste}>
+              <div className="flex gap-1.5 justify-center" onPaste={handleOtpPaste}>
                 {otp.map((digit, i) => (
                   <input
                     key={i}
@@ -223,7 +223,7 @@ function LoginPage() {
                     value={digit}
                     onChange={(e) => handleOtpChange(i, e.target.value)}
                     onKeyDown={(e) => handleOtpKey(i, e)}
-                    className={`h-12 w-10 rounded-xl border text-center text-lg font-bold font-mono focus:outline-none focus:ring-2 focus:ring-primary/60 transition glass ${
+                    className={`h-11 w-9 rounded-lg border text-center text-base font-bold font-mono focus:outline-none focus:ring-2 focus:ring-primary/60 transition glass ${
                       digit ? "border-primary text-foreground" : "border-border text-muted-foreground"
                     }`}
                     autoFocus={i === 0}
