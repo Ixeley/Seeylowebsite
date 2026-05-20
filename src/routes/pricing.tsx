@@ -20,6 +20,7 @@ type Billing = "weekly" | "monthly" | "yearly";
 
 const PRICES: Record<string, Partial<Record<Billing, { id: string; amount: string; note?: string }>>> = {
   basic: {
+    weekly:  { id: "price_1TYUz3AFPCa1P8v5KeX2o0t3", amount: "€5.99" },
     monthly: { id: "price_1TYUzdAFPCa1P8v5O41R8crG", amount: "€16.99" },
     yearly:  { id: "price_1TYV0LAFPCa1P8v59mzxNDUL", amount: "€143.88", note: "€11.99/mo" },
   },
@@ -178,7 +179,7 @@ function Pricing() {
           {TIERS.map((t) => {
             const price = getPrice(t.key);
             const isLoading = loading === t.key;
-            const unavailableOnWeekly = billing === "weekly" && t.key === "basic";
+            const unavailableOnWeekly = false;
 
             return (
               <div

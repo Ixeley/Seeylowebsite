@@ -1,6 +1,7 @@
 const Stripe = require("stripe");
 
 const VALID_PRICES = new Set([
+  "price_1TYUz3AFPCa1P8v5KeX2o0t3", // Basic Weekly
   "price_1TYUzdAFPCa1P8v5O41R8crG", // Basic Monthly
   "price_1TYV0LAFPCa1P8v59mzxNDUL", // Basic Yearly
   "price_1TYV0xAFPCa1P8v596ttjOP3", // Pro Weekly
