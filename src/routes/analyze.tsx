@@ -6,13 +6,13 @@ import { Footer } from "@/components/Footer";
 import { ParticleBackground } from "@/components/ParticleBackground";
 import { AnalysisResult } from "@/components/AnalysisResult";
 import { ChartCanvas } from "@/components/ChartCanvas";
-import { ChartCanvas } from "@/components/ChartCanvas";
 import {
   analyzeChart, checkNewsForSymbol, getCurrentSession, getPlanSlotCount, SLOT_TIMEFRAMES,
   type TradeAnalysis, type EntryMode, type Plan,
 } from "@/lib/openai";
 import { saveAnalysis } from "@/lib/mockAnalysis";
-import { Upload, Sparkles, X, Zap, BookOpen, Lock, Newspaper, ChevronDown, Clock, AlertTriangle } from "lucide-react";
+import { useAuth } from "@/lib/auth";
+import { Upload, Sparkles, X, Zap, BookOpen, Lock, Newspaper, Clock, AlertTriangle } from "lucide-react";
 
 export const Route = createFileRoute("/analyze")({
   component: AnalyzePage,
@@ -21,17 +21,12 @@ export const Route = createFileRoute("/analyze")({
 const STYLES = ["Scalp", "Day Trade", "Swing Trade"] as const;
 type Style = (typeof STYLES)[number];
 
-const PLAN_LABELS: Record<Plan, string> = { free: "Free", basic: "Basic", pro: "Pro", platinum: "Platinum" };
 const PLAN_UPGRADE: Record<Plan, string> = {
   free: "Upgrade to Basic",
   basic: "Upgrade to Pro",
   pro: "Upgrade to Platinum",
   platinum: "",
 };
-
-function getStoredPlan(): Plan {
-  return (localStorage.getItem("seeylo_plan") as Plan) ?? "platinum";
-}
 
 const LOADING_STEPS = [
   "Reading chart symbol & timeframe...",
@@ -51,7 +46,8 @@ const SESSION_COLORS: Record<string, string> = {
 };
 
 function AnalyzePage() {
-  const [plan, setPlan] = useState<Plan>(getStoredPlan);
+  const { profile } = useAuth();
+  const plan: Plan = (profile?.plan ?? "free") as Plan;
   const [tradeStyle, setTradeStyle] = useState<Style>("Day Trade");
   const [entryMode, setEntryMode] = useState<EntryMode>("standard");
   const [images, setImages] = useState<(string | null)[]>([null, null, null]);
@@ -61,7 +57,6 @@ function AnalyzePage() {
   const [draggingSlot, setDraggingSlot] = useState<number | null>(null);
   const [news, setNews] = useState<string | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
-  const [showPlanMenu, setShowPlanMenu] = useState(false);
   const inputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
   const session = getCurrentSession();
@@ -149,14 +144,6 @@ function AnalyzePage() {
     }
   };
 
-  const handleChangePlan = (p: Plan) => {
-    setPlan(p);
-    localStorage.setItem("seeylo_plan", p);
-    setImages([null, null, null]);
-    setAnalysis(null);
-    setShowPlanMenu(false);
-  };
-
   const reset = () => { setImages([null, null, null]); setAnalysis(null); setNews(null); };
 
   const canAnalyze = uploadedImages.length > 0 && !loading;
@@ -191,34 +178,15 @@ function AnalyzePage() {
             </p>
           </div>
 
-          {/* Plan selector */}
-          <div className="relative">
-            <button
-              onClick={() => setShowPlanMenu(!showPlanMenu)}
-              className="flex items-center gap-2 rounded-xl glass border border-border px-4 py-2.5 text-sm font-semibold hover:border-primary/50 transition"
-            >
-              <span className="h-2 w-2 rounded-full bg-primary" />
-              {PLAN_LABELS[plan]}
-              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showPlanMenu ? "rotate-180" : ""}`} />
-            </button>
-            {showPlanMenu && (
-              <div className="absolute right-0 top-full mt-1 z-50 glass-strong rounded-xl border border-border overflow-hidden shadow-xl">
-                {(["free", "basic", "pro", "platinum"] as Plan[]).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => handleChangePlan(p)}
-                    className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left transition hover:bg-primary/10 ${plan === p ? "text-primary font-semibold" : "text-muted-foreground"}`}
-                  >
-                    <span className={`h-1.5 w-1.5 rounded-full ${plan === p ? "bg-primary" : "bg-muted"}`} />
-                    {PLAN_LABELS[p]}
-                    <span className="ml-auto text-xs text-muted-foreground/60">
-                      {getPlanSlotCount(p)} chart{getPlanSlotCount(p) > 1 ? "s" : ""}
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {/* Plan badge */}
+          <a
+            href="/pricing"
+            className="flex items-center gap-2 rounded-xl glass border border-border px-4 py-2.5 text-sm font-semibold hover:border-primary/50 transition capitalize"
+          >
+            <span className="h-2 w-2 rounded-full bg-primary" />
+            {plan} plan
+            {plan !== "platinum" && <span className="text-xs text-muted-foreground ml-1">· Upgrade</span>}
+          </a>
         </div>
 
         {/* Trade style + entry mode */}
