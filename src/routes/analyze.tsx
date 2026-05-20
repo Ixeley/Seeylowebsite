@@ -47,7 +47,7 @@ const SESSION_COLORS: Record<string, string> = {
 
 function AnalyzePage() {
   const { profile } = useAuth();
-  const plan: Plan = (profile?.plan ?? "free") as Plan;
+  const plan: Plan = "platinum";
   const [tradeStyle, setTradeStyle] = useState<Style>("Day Trade");
   const [entryMode, setEntryMode] = useState<EntryMode>("standard");
   const [images, setImages] = useState<(string | null)[]>([null, null, null]);
