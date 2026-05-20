@@ -21,7 +21,7 @@ export function Header() {
     navigate({ to: "/" });
   };
 
-  const plan = profile?.plan ?? "free";
+  const plan = profile?.plan ?? "platinum";
   const badge = PLAN_BADGE[plan];
 
   return (
