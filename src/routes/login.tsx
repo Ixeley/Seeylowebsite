@@ -18,12 +18,13 @@ function LoginPage() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
-  const [otp, setOtp] = useState(["", "", "", "", "", ""]);
+  const [otp, setOtp] = useState(["", "", "", "", "", "", "", ""]);
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resendCountdown, setResendCountdown] = useState(0);
   const otpRefs = [
+    useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
@@ -59,7 +60,7 @@ function LoginPage() {
 
   const verifyOTP = async () => {
     const code = otp.join("");
-    if (code.length !== 6) { toast.error("Enter the 6-digit code"); return; }
+    if (code.length !== 8) { toast.error("Enter the 8-digit code"); return; }
     setLoading(true);
     const { data, error } = await supabase.auth.verifyOtp({
       email: email.trim().toLowerCase(),
@@ -114,14 +115,14 @@ function LoginPage() {
     const next = [...otp];
     next[i] = digit;
     setOtp(next);
-    if (digit && i < 5) otpRefs[i + 1].current?.focus();
+    if (digit && i < 7) otpRefs[i + 1].current?.focus();
   };
 
   const handleOtpPaste = (e: React.ClipboardEvent) => {
-    const text = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 6);
-    if (text.length === 6) {
+    const text = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 8);
+    if (text.length === 8) {
       setOtp(text.split(""));
-      otpRefs[5].current?.focus();
+      otpRefs[7].current?.focus();
     }
   };
 
@@ -205,7 +206,7 @@ function LoginPage() {
                   <Mail className="h-5 w-5 text-primary" />
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  We sent a 6-digit code to<br />
+                  We sent an 8-digit code to<br />
                   <span className="text-foreground font-semibold">{email}</span>
                 </p>
               </div>
@@ -232,7 +233,7 @@ function LoginPage() {
 
               <button
                 onClick={verifyOTP}
-                disabled={loading || otp.join("").length !== 6}
+                disabled={loading || otp.join("").length !== 8}
                 className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-primary to-primary/70 px-4 py-3 text-sm font-semibold text-primary-foreground glow-primary-sm hover:glow-primary transition disabled:opacity-50"
               >
                 {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
