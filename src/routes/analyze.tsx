@@ -1,14 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useRef, useState } from "react";
+import { useRef, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { Header } from "@/components/Header";
 import { Footer } from "@/components/Footer";
 import { ParticleBackground } from "@/components/ParticleBackground";
 import { AnalysisResult } from "@/components/AnalysisResult";
 import { ChartCanvas } from "@/components/ChartCanvas";
-import { analyzeChart, checkNewsForSymbol, getStoredKey, saveKey, type TradeAnalysis, type EntryMode } from "@/lib/openai";
+import {
+  analyzeChart, checkNewsForSymbol, getCurrentSession, getPlanSlotCount, SLOT_TIMEFRAMES,
+  type TradeAnalysis, type EntryMode, type Plan,
+} from "@/lib/openai";
 import { saveAnalysis } from "@/lib/mockAnalysis";
-import { Upload, Sparkles, Loader2, X, Settings, Check, Zap, BookOpen, Newspaper } from "lucide-react";
+import { Upload, Sparkles, X, Zap, BookOpen, Lock, Newspaper, ChevronDown, Clock, AlertTriangle } from "lucide-react";
 
 export const Route = createFileRoute("/analyze")({
   component: AnalyzePage,
@@ -17,41 +20,115 @@ export const Route = createFileRoute("/analyze")({
 const STYLES = ["Scalp", "Day Trade", "Swing Trade"] as const;
 type Style = (typeof STYLES)[number];
 
-const TIMEFRAME_GUIDE: Record<Style, string> = {
-  "Scalp":       "1m – 5m",
-  "Day Trade":   "15m – 1H",
-  "Swing Trade": "4H – 1D",
+const PLAN_LABELS: Record<Plan, string> = { free: "Free", basic: "Basic", pro: "Pro", platinum: "Platinum" };
+const PLAN_UPGRADE: Record<Plan, string> = {
+  free: "Upgrade to Basic",
+  basic: "Upgrade to Pro",
+  pro: "Upgrade to Platinum",
+  platinum: "",
 };
 
+function getStoredPlan(): Plan {
+  return (localStorage.getItem("seeylo_plan") as Plan) ?? "platinum";
+}
+
 const LOADING_STEPS = [
-  "Reading chart symbol & price...",
-  "Mapping market structure...",
-  "Finding order blocks & FVGs...",
-  "Mapping liquidity & BOS/CHoCH...",
+  "Reading chart symbol & timeframe...",
+  "Mapping market structure & BOS...",
+  "Identifying Order Blocks & FVGs...",
+  "Locating liquidity pools & targets...",
+  "Calculating probabilities & R:R...",
   "Finalizing trade parameters...",
 ];
 
+const SESSION_COLORS: Record<string, string> = {
+  "Asian":            "text-cyan-400 border-cyan-400/30 bg-cyan-400/10",
+  "London":           "text-amber-400 border-amber-400/30 bg-amber-400/10",
+  "New York":         "text-green-400 border-green-400/30 bg-green-400/10",
+  "London/NY Overlap":"text-violet-400 border-violet-400/30 bg-violet-400/10",
+  "Off-hours":        "text-muted-foreground border-border bg-muted/20",
+};
+
 function AnalyzePage() {
+  const [plan, setPlan] = useState<Plan>(getStoredPlan);
   const [tradeStyle, setTradeStyle] = useState<Style>("Day Trade");
   const [entryMode, setEntryMode] = useState<EntryMode>("standard");
-  const [image, setImage] = useState<string | null>(null);
+  const [images, setImages] = useState<(string | null)[]>([null, null, null]);
   const [loading, setLoading] = useState(false);
   const [loadingStep, setLoadingStep] = useState(0);
   const [analysis, setAnalysis] = useState<TradeAnalysis | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const [showKeyInput, setShowKeyInput] = useState(false);
-  const [keyDraft, setKeyDraft] = useState("");
-  const [hasKey, setHasKey] = useState(() => !!getStoredKey());
+  const [draggingSlot, setDraggingSlot] = useState<number | null>(null);
   const [news, setNews] = useState<string | null>(null);
   const [newsLoading, setNewsLoading] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [showPlanMenu, setShowPlanMenu] = useState(false);
+  const inputRefs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
-  const handleFile = (file: File) => {
+  const session = getCurrentSession();
+  const sessionCls = SESSION_COLORS[session] ?? SESSION_COLORS["Off-hours"];
+  const unlockedSlots = getPlanSlotCount(plan);
+  const slotTFs = SLOT_TIMEFRAMES[tradeStyle]?.[plan] ?? [];
+  const uploadedImages = images.filter(Boolean) as string[];
+
+  const handleFile = useCallback((file: File, slot: number) => {
     if (!file.type.startsWith("image/")) { toast.error("Please upload an image file"); return; }
-    if (file.size > 20 * 1024 * 1024) { toast.error("File too large", { description: "Max 20 MB" }); return; }
+    if (file.size > 20 * 1024 * 1024) { toast.error("File too large — max 20 MB"); return; }
     const reader = new FileReader();
-    reader.onload = (e) => { setImage(e.target?.result as string); setAnalysis(null); };
+    reader.onload = (e) => {
+      setImages((prev) => { const next = [...prev]; next[slot] = e.target?.result as string; return next; });
+      setAnalysis(null);
+    };
     reader.readAsDataURL(file);
+  }, []);
+
+  const removeImage = (slot: number) => {
+    setImages((prev) => { const next = [...prev]; next[slot] = null; return next; });
+    setAnalysis(null);
+    setNews(null);
+  };
+
+  const handleAnalyze = async () => {
+    if (uploadedImages.length === 0) return;
+    setLoading(true);
+    setLoadingStep(0);
+    setAnalysis(null);
+    setNews(null);
+
+    const stepInterval = setInterval(() => {
+      setLoadingStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s));
+    }, 900);
+
+    try {
+      const result = await analyzeChart(uploadedImages, tradeStyle, entryMode, plan);
+      clearInterval(stepInterval);
+      setAnalysis(result);
+
+      if (result.noTrade) {
+        toast.warning(`No-trade conditions detected`, { description: result.noTradeReason ?? "Check reasoning below" });
+      } else {
+        saveAnalysis({
+          id: crypto.randomUUID(),
+          market: result.symbol,
+          tradeStyle,
+          direction: result.direction,
+          entry: result.entry,
+          takeProfits: result.takeProfits,
+          stopLoss: result.stopLoss,
+          riskReward: result.riskReward,
+          confidence: result.confidence,
+          reasoning: result.reasoning,
+          createdAt: new Date().toISOString(),
+        });
+        toast.success(`${result.symbol} · ${result.direction}`, {
+          description: `Entry ${result.entry.toLocaleString()} · ${result.confidence}% confidence`,
+        });
+      }
+    } catch (err) {
+      clearInterval(stepInterval);
+      toast.error("Analysis failed", { description: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setLoading(false);
+      setLoadingStep(0);
+    }
   };
 
   const handleCheckNews = async () => {
@@ -68,57 +145,18 @@ function AnalyzePage() {
     }
   };
 
-  const handleAnalyze = async () => {
-    if (!image) return;
-    setLoading(true);
-    setLoadingStep(0);
+  const handleChangePlan = (p: Plan) => {
+    setPlan(p);
+    localStorage.setItem("seeylo_plan", p);
+    setImages([null, null, null]);
     setAnalysis(null);
-    setNews(null);
-
-    const stepInterval = setInterval(() => {
-      setLoadingStep((s) => (s < LOADING_STEPS.length - 1 ? s + 1 : s));
-    }, 1100);
-
-    try {
-      const result = await analyzeChart(image, tradeStyle, entryMode);
-      clearInterval(stepInterval);
-      setAnalysis(result);
-      saveAnalysis({
-        id: crypto.randomUUID(),
-        market: result.symbol,
-        tradeStyle,
-        direction: result.direction,
-        entry: result.entry,
-        takeProfits: result.takeProfits,
-        stopLoss: result.stopLoss,
-        riskReward: result.riskReward,
-        confidence: result.confidence,
-        reasoning: result.reasoning,
-        createdAt: new Date().toISOString(),
-      });
-      toast.success(`${result.symbol} · ${result.direction}`, {
-        description: `Entry ${result.entry.toLocaleString()} · ${result.confidence}% confidence`,
-      });
-    } catch (err) {
-      clearInterval(stepInterval);
-      toast.error("Analysis failed", { description: err instanceof Error ? err.message : "Unknown error" });
-    } finally {
-      setLoading(false);
-      setLoadingStep(0);
-    }
+    setShowPlanMenu(false);
   };
 
-  const reset = () => { setImage(null); setAnalysis(null); setNews(null); };
+  const reset = () => { setImages([null, null, null]); setAnalysis(null); setNews(null); };
 
-  const handleSaveKey = () => {
-    const k = keyDraft.trim();
-    if (!k.startsWith("sk-")) { toast.error("Invalid key format"); return; }
-    saveKey(k);
-    setHasKey(true);
-    setShowKeyInput(false);
-    setKeyDraft("");
-    toast.success("API key saved");
-  };
+  const canAnalyze = uploadedImages.length > 0 && !loading;
+  const fastLocked = plan === "free" || plan === "basic";
 
   return (
     <div className="min-h-screen">
@@ -127,54 +165,61 @@ function AnalyzePage() {
 
       <main className="container mx-auto px-6 py-12">
         {/* Page header */}
-        <div className="mb-8">
-          <div className="inline-flex items-center gap-2 rounded-full glass px-3 py-1 text-xs text-muted-foreground mb-4">
-            <span className="h-1.5 w-1.5 rounded-full bg-bullish animate-pulse" />
-            GPT-4o Vision · ICT/SMC Analysis
-          </div>
-          <h1 className="text-3xl md:text-4xl font-bold text-gradient">Chart Analysis</h1>
-          <p className="text-muted-foreground mt-2">
-            Upload a chart screenshot — AI reads the symbol, price, and structure automatically.
-          </p>
-        </div>
-
-        {/* API key setup */}
-        {(!hasKey || showKeyInput) && (
-          <div className="mb-6 glass rounded-xl border border-primary/30 p-4">
-            <div className="flex items-center gap-2 mb-3">
-              <Settings className="h-4 w-4 text-primary" />
-              <span className="text-sm font-semibold">OpenAI API Key</span>
-              <span className="text-xs text-muted-foreground ml-auto">Stored locally in your browser</span>
+        <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              <div className="inline-flex items-center gap-2 rounded-full glass px-3 py-1 text-xs text-muted-foreground">
+                <span className="h-1.5 w-1.5 rounded-full bg-bullish animate-pulse" />
+                GPT-4o Vision · ICT/SMC
+              </div>
+              <div className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${sessionCls}`}>
+                <Clock className="h-3 w-3" /> {session} session
+              </div>
+              {session === "Off-hours" && (
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-yellow-400/30 bg-yellow-400/10 px-3 py-1 text-xs text-yellow-400">
+                  <AlertTriangle className="h-3 w-3" /> Low liquidity
+                </div>
+              )}
             </div>
-            <div className="flex gap-2">
-              <input
-                type="password"
-                value={keyDraft}
-                onChange={(e) => setKeyDraft(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSaveKey()}
-                placeholder="sk-proj-..."
-                className="flex-1 rounded-lg glass px-3 py-2.5 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-primary/60 placeholder:text-muted-foreground/40"
-              />
-              <button onClick={handleSaveKey} className="rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition flex items-center gap-1.5">
-                <Check className="h-4 w-4" /> Save
-              </button>
-            </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Get a free key at <span className="text-primary">platform.openai.com/api-keys</span>
+            <h1 className="text-3xl md:text-4xl font-bold text-gradient">Chart Analysis</h1>
+            <p className="text-muted-foreground mt-1.5 text-sm">
+              Upload chart screenshots — AI reads symbol, structure, and gives a professional trade plan.
             </p>
           </div>
-        )}
-        {hasKey && !showKeyInput && (
-          <div className="mb-6 flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="h-1.5 w-1.5 rounded-full bg-bullish" />
-            GPT-4o connected
-            <button onClick={() => { setShowKeyInput(true); setKeyDraft(""); }} className="ml-2 hover:text-foreground transition underline">change key</button>
-          </div>
-        )}
 
-        {/* Trade style + entry mode selectors */}
+          {/* Plan selector */}
+          <div className="relative">
+            <button
+              onClick={() => setShowPlanMenu(!showPlanMenu)}
+              className="flex items-center gap-2 rounded-xl glass border border-border px-4 py-2.5 text-sm font-semibold hover:border-primary/50 transition"
+            >
+              <span className="h-2 w-2 rounded-full bg-primary" />
+              {PLAN_LABELS[plan]}
+              <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showPlanMenu ? "rotate-180" : ""}`} />
+            </button>
+            {showPlanMenu && (
+              <div className="absolute right-0 top-full mt-1 z-50 glass-strong rounded-xl border border-border overflow-hidden shadow-xl">
+                {(["free", "basic", "pro", "platinum"] as Plan[]).map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => handleChangePlan(p)}
+                    className={`w-full flex items-center gap-2.5 px-4 py-2.5 text-sm text-left transition hover:bg-primary/10 ${plan === p ? "text-primary font-semibold" : "text-muted-foreground"}`}
+                  >
+                    <span className={`h-1.5 w-1.5 rounded-full ${plan === p ? "bg-primary" : "bg-muted"}`} />
+                    {PLAN_LABELS[p]}
+                    <span className="ml-auto text-xs text-muted-foreground/60">
+                      {getPlanSlotCount(p)} chart{getPlanSlotCount(p) > 1 ? "s" : ""}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Trade style + entry mode */}
         <div className="mb-8 flex flex-wrap gap-6 items-start">
-          <div className="max-w-sm flex-1 min-w-[220px]">
+          <div className="flex-1 min-w-[220px] max-w-sm">
             <span className="text-xs uppercase tracking-widest text-muted-foreground">Trade Style</span>
             <div className="mt-2 flex gap-2">
               {STYLES.map((s) => (
@@ -191,23 +236,25 @@ function AnalyzePage() {
                 </button>
               ))}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground">
-              Use a <span className="text-primary font-medium">{TIMEFRAME_GUIDE[tradeStyle]}</span> chart for best results
-            </p>
           </div>
 
           <div>
-            <span className="text-xs uppercase tracking-widest text-muted-foreground">Entry Mode</span>
+            <span className="text-xs uppercase tracking-widest text-muted-foreground flex items-center gap-2">
+              Entry Mode
+              {fastLocked && <span className="text-[10px] rounded-full border border-yellow-400/30 bg-yellow-400/10 text-yellow-400 px-1.5 py-0.5">Pro+</span>}
+            </span>
             <div className="mt-2 flex gap-2">
               <button
-                onClick={() => setEntryMode("fast")}
+                onClick={() => { if (!fastLocked) setEntryMode("fast"); else toast.info("Fast mode requires Pro or Platinum plan"); }}
                 className={`flex items-center gap-1.5 rounded-xl border px-4 py-2.5 text-sm font-medium transition ${
-                  entryMode === "fast"
+                  entryMode === "fast" && !fastLocked
                     ? "bg-yellow-500/20 border-yellow-400/60 text-yellow-300"
+                    : fastLocked
+                    ? "glass border-border text-muted-foreground/40 cursor-not-allowed"
                     : "glass border-border text-muted-foreground hover:text-foreground hover:border-yellow-400/30"
                 }`}
               >
-                <Zap className="h-3.5 w-3.5" /> Fast
+                {fastLocked ? <Lock className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5" />} Fast
               </button>
               <button
                 onClick={() => setEntryMode("standard")}
@@ -221,88 +268,109 @@ function AnalyzePage() {
               </button>
             </div>
             <p className="mt-2 text-xs text-muted-foreground">
-              {entryMode === "fast" ? (
-                <><span className="text-yellow-400 font-medium">Market now</span> — enters at current price</>
-              ) : (
-                <><span className="text-primary font-medium">Limit order</span> — waits for OB/FVG pullback</>
-              )}
+              {entryMode === "fast" && !fastLocked
+                ? <><span className="text-yellow-400 font-medium">Market now</span> — enters at current price</>
+                : <><span className="text-primary font-medium">Limit order</span> — waits for OB/FVG pullback</>
+              }
             </p>
           </div>
         </div>
 
         <div className="grid lg:grid-cols-2 gap-6">
-          {/* Left: chart */}
+          {/* Left: chart slots + analyze button */}
           <div className="flex flex-col gap-4">
-            {!image ? (
-              <DropZone dragging={dragging} inputRef={inputRef} onFile={handleFile} onDragChange={setDragging} />
-            ) : (
-              <div className="glass-strong rounded-2xl p-3 relative group">
-                {analysis
-                  ? <ChartCanvas imageUrl={image} analysis={analysis} />
-                  : <img src={image} alt="Chart" className="w-full rounded-xl border border-border object-contain max-h-[420px]" />
-                }
-                <button
-                  onClick={reset}
-                  className="absolute top-5 right-5 h-7 w-7 rounded-full bg-background/80 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition hover:bg-muted"
-                  title="Remove"
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            )}
+            {/* 3 image slots */}
+            <div className={`grid gap-3 ${unlockedSlots >= 2 ? "grid-cols-1 sm:grid-cols-3" : "grid-cols-1"}`}>
+              {[0, 1, 2].map((slot) => {
+                const unlocked = slot < unlockedSlots;
+                const tf = slotTFs[slot];
+                const img = images[slot];
 
-            {image && !loading && (
+                if (!unlocked) {
+                  return (
+                    <LockedSlot key={slot} slot={slot} plan={plan} upgrade={PLAN_UPGRADE[plan]} />
+                  );
+                }
+
+                return (
+                  <ImageSlot
+                    key={slot}
+                    slot={slot}
+                    tf={tf}
+                    image={img}
+                    dragging={draggingSlot === slot}
+                    inputRef={inputRefs[slot]}
+                    compact={unlockedSlots >= 2}
+                    onFile={handleFile}
+                    onRemove={removeImage}
+                    onDragChange={(v) => setDraggingSlot(v ? slot : null)}
+                  />
+                );
+              })}
+            </div>
+
+            {/* Analyze button */}
+            {canAnalyze && (
               <button
                 onClick={handleAnalyze}
-                className="w-full rounded-xl bg-gradient-to-r from-primary to-primary/70 px-6 py-4 text-base font-semibold text-primary-foreground glow-primary hover:glow-primary transition flex items-center justify-center gap-2 hover:scale-[1.01] active:scale-[0.99]"
+                className="w-full rounded-xl bg-gradient-to-r from-primary to-primary/70 px-6 py-4 text-base font-semibold text-primary-foreground glow-primary hover:scale-[1.01] active:scale-[0.99] transition flex items-center justify-center gap-2"
               >
-                <Sparkles className="h-5 w-5" /> Analyze Chart
+                <Sparkles className="h-5 w-5" />
+                Analyze {uploadedImages.length > 1 ? `${uploadedImages.length} Charts` : "Chart"}
               </button>
             )}
-            {image && loading && (
-              <button disabled className="w-full rounded-xl bg-primary/40 px-6 py-4 text-base font-semibold text-primary-foreground flex items-center justify-center gap-2 cursor-not-allowed">
-                <Loader2 className="h-5 w-5 animate-spin" /> Analyzing...
-              </button>
+            {loading && <LoadingButton />}
+            {!canAnalyze && !loading && uploadedImages.length === 0 && (
+              <div className="text-center text-xs text-muted-foreground py-2">
+                Upload {unlockedSlots > 1 ? "at least one chart" : "a chart"} to start analysis
+              </div>
             )}
           </div>
 
           {/* Right: results */}
           <div className="space-y-4">
-            {loading && <LoadingState step={loadingStep} />}
+            {loading && <LoadingState step={loadingStep} chartCount={uploadedImages.length} />}
             {!loading && analysis && (
               <>
-                <AnalysisResult
-                  analysis={analysis}
-                  tradeStyle={tradeStyle}
-                  onReset={reset}
-                  onReanalyze={handleAnalyze}
-                />
+                {analysis.noTrade ? (
+                  <NoTradeCard reason={analysis.noTradeReason ?? "Conditions not favorable"} onReset={reset} />
+                ) : (
+                  <AnalysisResult
+                    analysis={analysis}
+                    tradeStyle={tradeStyle}
+                    onReset={reset}
+                    onReanalyze={handleAnalyze}
+                  />
+                )}
                 {/* News check */}
                 <div className="glass-strong rounded-2xl p-4">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2 text-sm font-semibold">
                       <Newspaper className="h-4 w-4 text-primary" />
-                      News Impact · {analysis.symbol}
+                      News · {analysis.symbol}
                     </div>
                     <button
                       onClick={handleCheckNews}
                       disabled={newsLoading}
                       className="flex items-center gap-1.5 rounded-lg border border-primary/40 bg-primary/10 px-3 py-1.5 text-xs font-semibold text-primary hover:bg-primary/20 transition disabled:opacity-50"
                     >
-                      {newsLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Sparkles className="h-3 w-3" />}
-                      {newsLoading ? "Checking..." : "Check Today's News"}
+                      {newsLoading
+                        ? <span className="h-3 w-3 rounded-full border-2 border-primary border-t-transparent animate-spin" />
+                        : <Sparkles className="h-3 w-3" />
+                      }
+                      {newsLoading ? "Checking..." : "Check News"}
                     </button>
                   </div>
-                  {news && (
-                    <p className="text-xs leading-relaxed text-muted-foreground whitespace-pre-line animate-fade-up">{news}</p>
-                  )}
+                  {news && <p className="text-xs leading-relaxed text-muted-foreground whitespace-pre-line animate-fade-up">{news}</p>}
                   {!news && !newsLoading && (
-                    <p className="text-xs text-muted-foreground/60">Check for economic events, FOMC, CPI, NFP etc. that may impact this pair today.</p>
+                    <p className="text-xs text-muted-foreground/60">Check for FOMC, CPI, NFP and other events that may affect this pair today.</p>
                   )}
                 </div>
               </>
             )}
-            {!loading && !analysis && <EmptyState hasImage={!!image} style={tradeStyle} />}
+            {!loading && !analysis && (
+              <EmptyState hasImages={uploadedImages.length > 0} style={tradeStyle} session={session} plan={plan} />
+            )}
           </div>
         </div>
       </main>
@@ -312,53 +380,125 @@ function AnalyzePage() {
   );
 }
 
-function DropZone({ dragging, inputRef, onFile, onDragChange }: {
-  dragging: boolean;
-  inputRef: React.RefObject<HTMLInputElement | null>;
-  onFile: (f: File) => void;
+function ImageSlot({
+  slot, tf, image, dragging, inputRef, compact, onFile, onRemove, onDragChange,
+}: {
+  slot: number; tf: string; image: string | null; dragging: boolean;
+  inputRef: React.RefObject<HTMLInputElement | null>; compact: boolean;
+  onFile: (f: File, slot: number) => void;
+  onRemove: (slot: number) => void;
   onDragChange: (v: boolean) => void;
 }) {
+  const minH = compact ? "min-h-[140px]" : "min-h-[380px]";
+
+  if (image) {
+    return (
+      <div className={`glass-strong rounded-2xl p-2 relative group ${minH} flex flex-col`}>
+        <div className="flex items-center justify-between px-2 py-1 mb-1">
+          <span className="text-[10px] font-mono text-muted-foreground">Chart {slot + 1}</span>
+          {tf && <span className="text-[10px] rounded-full border border-primary/40 bg-primary/10 text-primary px-2 py-0.5 font-mono">{tf}</span>}
+        </div>
+        <img src={image} alt={`Chart ${slot + 1}`} className="w-full flex-1 rounded-xl object-contain border border-border" style={{ maxHeight: compact ? "120px" : "360px" }} />
+        <button
+          onClick={() => onRemove(slot)}
+          className="absolute top-3 right-3 h-6 w-6 rounded-full bg-background/80 border border-border flex items-center justify-center opacity-0 group-hover:opacity-100 transition hover:bg-muted"
+        >
+          <X className="h-3 w-3" />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div
       onDragOver={(e) => { e.preventDefault(); onDragChange(true); }}
       onDragLeave={() => onDragChange(false)}
-      onDrop={(e) => { e.preventDefault(); onDragChange(false); const f = e.dataTransfer.files?.[0]; if (f) onFile(f); }}
+      onDrop={(e) => { e.preventDefault(); onDragChange(false); const f = e.dataTransfer.files?.[0]; if (f) onFile(f, slot); }}
       onClick={() => inputRef.current?.click()}
-      className={`relative cursor-pointer rounded-2xl border-2 border-dashed transition-all p-12 text-center glass min-h-[420px] flex flex-col items-center justify-center ${
+      className={`relative cursor-pointer rounded-2xl border-2 border-dashed transition-all glass flex flex-col items-center justify-center text-center ${minH} ${
         dragging ? "border-primary glow-primary scale-[1.01]" : "border-border hover:border-primary/60 hover:glow-primary-sm"
       }`}
     >
-      <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f); }} />
-      <div className="h-16 w-16 rounded-2xl bg-primary/15 border border-primary/40 flex items-center justify-center mb-5 animate-pulse-glow">
-        <Upload className="h-7 w-7 text-primary" />
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) onFile(f, slot); }}
+      />
+      <div className={`rounded-xl bg-primary/10 border border-primary/30 flex items-center justify-center mb-2 ${compact ? "h-8 w-8" : "h-12 w-12"}`}>
+        <Upload className={`text-primary ${compact ? "h-4 w-4" : "h-6 w-6"}`} />
       </div>
-      <h3 className="text-lg font-semibold mb-1">Drop your chart here</h3>
-      <p className="text-sm text-muted-foreground mb-4">or click to browse · PNG, JPG, up to 20 MB</p>
-      <div className="flex flex-wrap justify-center gap-2 text-xs text-muted-foreground">
-        {["TradingView", "Thinkorswim", "MT4/5", "NinjaTrader", "Tradovate"].map((p) => (
-          <span key={p} className="glass rounded-full px-2.5 py-1">{p}</span>
-        ))}
-      </div>
+      {tf && (
+        <span className={`font-mono text-primary font-bold ${compact ? "text-sm" : "text-xl"}`}>{tf}</span>
+      )}
+      {!compact && <p className="text-xs text-muted-foreground mt-1">Drop chart or click</p>}
+      {compact && <p className="text-[10px] text-muted-foreground mt-0.5">Chart {slot + 1}</p>}
     </div>
   );
 }
 
-function LoadingState({ step }: { step: number }) {
+function LockedSlot({ slot, plan, upgrade }: { slot: number; plan: Plan; upgrade: string }) {
+  const needsPlan = slot === 1 ? "Pro" : "Platinum";
   return (
-    <div className="glass-strong rounded-2xl p-8 min-h-[420px] flex flex-col items-center justify-center text-center">
-      <div className="relative h-16 w-16 mb-6">
-        <div className="absolute inset-0 rounded-full bg-primary/20 animate-pulse-glow" />
+    <div className="rounded-2xl border-2 border-dashed border-border/40 flex flex-col items-center justify-center text-center min-h-[140px] bg-muted/10 relative overflow-hidden">
+      <div className="absolute inset-0 bg-gradient-to-br from-muted/5 to-transparent" />
+      <Lock className="h-5 w-5 text-muted-foreground/50 mb-1.5" />
+      <span className="text-xs font-semibold text-muted-foreground/70">{needsPlan}+</span>
+      {upgrade && (
+        <a href="/pricing" className="mt-2 text-[10px] text-primary hover:underline">{upgrade}</a>
+      )}
+    </div>
+  );
+}
+
+function LoadingButton() {
+  return (
+    <div className="w-full rounded-xl bg-primary/30 px-6 py-4 flex items-center justify-center gap-3 cursor-not-allowed">
+      <div className="relative h-5 w-5">
+        <div className="absolute inset-0 rounded-full border-2 border-primary/30" />
+        <div className="absolute inset-0 rounded-full border-2 border-transparent border-t-primary animate-spin" />
+      </div>
+      <span className="text-sm font-semibold text-primary-foreground/80">Analyzing...</span>
+    </div>
+  );
+}
+
+function LoadingState({ step, chartCount }: { step: number; chartCount: number }) {
+  return (
+    <div className="glass-strong rounded-2xl p-8 min-h-[380px] flex flex-col items-center justify-center text-center">
+      {/* Orbital scanning animation */}
+      <div className="relative h-24 w-24 mb-8">
+        {/* Outer ring */}
+        <div className="absolute inset-0 rounded-full border-2 border-primary/20 animate-spin" style={{ animationDuration: "3s" }} />
+        {/* Scanning ring */}
+        <div className="absolute inset-1 rounded-full border-2 border-transparent border-t-primary border-r-primary/50 animate-spin" style={{ animationDuration: "1.2s" }} />
+        {/* Inner ring */}
+        <div className="absolute inset-3 rounded-full border border-bullish/30 animate-spin" style={{ animationDuration: "2s", animationDirection: "reverse" }} />
+        {/* Center pulse */}
         <div className="absolute inset-0 flex items-center justify-center">
-          <Loader2 className="h-8 w-8 text-primary animate-spin" />
+          <div className="h-6 w-6 rounded-full bg-primary/30 animate-pulse-glow" />
+          <div className="absolute h-3 w-3 rounded-full bg-primary" />
+        </div>
+        {/* Orbit dot */}
+        <div className="absolute inset-0 animate-spin" style={{ animationDuration: "1.2s" }}>
+          <div className="absolute top-0 left-1/2 -translate-x-1/2 -translate-y-1 h-2 w-2 rounded-full bg-primary glow-primary-sm" />
         </div>
       </div>
-      <h3 className="text-lg font-semibold mb-2">GPT-4o reading your chart...</h3>
-      <p className="text-sm text-primary mb-6 min-h-[20px] transition-all">{LOADING_STEPS[step]}</p>
-      <div className="w-full max-w-xs space-y-2">
+
+      <h3 className="text-lg font-semibold mb-1">
+        Analyzing {chartCount > 1 ? `${chartCount} charts` : "chart"}...
+      </h3>
+      <p className="text-sm text-primary mb-6 h-5 transition-all">{LOADING_STEPS[step]}</p>
+
+      <div className="w-full max-w-xs space-y-2.5">
         {LOADING_STEPS.map((s, i) => (
-          <div key={s} className="flex items-center gap-2.5 text-xs">
-            <div className={`h-1.5 w-1.5 rounded-full flex-shrink-0 transition-colors ${i < step ? "bg-bullish" : i === step ? "bg-primary animate-pulse" : "bg-muted"}`} />
-            <span className={i <= step ? "text-foreground" : "text-muted-foreground"}>{s}</span>
+          <div key={s} className="flex items-center gap-3 text-xs">
+            <div className={`h-1.5 w-1.5 rounded-full flex-shrink-0 transition-all ${
+              i < step ? "bg-bullish scale-110" : i === step ? "bg-primary animate-pulse scale-125" : "bg-muted"
+            }`} />
+            <div className={`flex-1 h-0.5 rounded-full transition-all ${i < step ? "bg-bullish/40" : i === step ? "bg-primary/40" : "bg-muted/30"}`} />
+            <span className={`transition-colors w-48 text-left ${i < step ? "text-bullish/80" : i === step ? "text-foreground" : "text-muted-foreground/50"}`}>{s}</span>
           </div>
         ))}
       </div>
@@ -366,21 +506,56 @@ function LoadingState({ step }: { step: number }) {
   );
 }
 
-function EmptyState({ hasImage, style }: { hasImage: boolean; style: Style }) {
+function NoTradeCard({ reason, onReset }: { reason: string; onReset: () => void }) {
   return (
-    <div className="glass rounded-2xl p-8 min-h-[420px] flex flex-col items-center justify-center text-center border-dashed">
-      <Sparkles className="h-10 w-10 text-primary/60 mb-3" />
-      <h3 className="font-semibold mb-1">
-        {hasImage ? "Ready to analyze" : "Your analysis will appear here"}
+    <div className="glass-strong rounded-2xl p-6 border border-yellow-400/30 animate-fade-up">
+      <div className="flex items-center gap-3 mb-4">
+        <div className="h-10 w-10 rounded-full bg-yellow-400/15 border border-yellow-400/40 flex items-center justify-center flex-shrink-0">
+          <AlertTriangle className="h-5 w-5 text-yellow-400" />
+        </div>
+        <div>
+          <h3 className="font-bold text-yellow-400">No-Trade Condition Detected</h3>
+          <p className="text-xs text-muted-foreground">AI recommends sitting this one out</p>
+        </div>
+      </div>
+      <div className="rounded-xl bg-yellow-400/5 border border-yellow-400/20 px-4 py-3 text-sm text-foreground/90 leading-relaxed mb-5">
+        {reason}
+      </div>
+      <div className="text-xs text-muted-foreground mb-4">
+        Patience is a skill. Missing a trade is better than losing on a low-probability setup. Wait for clearer structure.
+      </div>
+      <button
+        onClick={onReset}
+        className="w-full rounded-xl glass border border-border px-4 py-2.5 text-sm font-semibold hover:bg-muted/60 transition"
+      >
+        Upload a Different Chart
+      </button>
+    </div>
+  );
+}
+
+function EmptyState({ hasImages, style, session, plan }: { hasImages: boolean; style: Style; session: string; plan: Plan }) {
+  const tfs = SLOT_TIMEFRAMES[style]?.[plan] ?? [];
+  return (
+    <div className="glass rounded-2xl p-8 min-h-[380px] flex flex-col items-center justify-center text-center">
+      <Sparkles className="h-10 w-10 text-primary/50 mb-4" />
+      <h3 className="font-semibold mb-1 text-lg">
+        {hasImages ? "Ready to analyze" : "Your analysis will appear here"}
       </h3>
-      <p className="text-sm text-muted-foreground mb-4">
-        {hasImage ? "Press Analyze Chart — AI reads everything from your screenshot" : "Upload a chart screenshot to get started"}
+      <p className="text-sm text-muted-foreground mb-5">
+        {hasImages
+          ? "Press Analyze — AI reads symbol, structure, and probability"
+          : "Upload a chart screenshot to get started"}
       </p>
-      {!hasImage && (
-        <div className="glass rounded-lg px-4 py-3 text-xs text-muted-foreground">
-          <span className="text-primary font-semibold">{style}</span>
-          {" → "}
-          <span className="text-foreground font-medium">{TIMEFRAME_GUIDE[style]}</span> chart
+      {tfs.length > 0 && (
+        <div className="space-y-2 w-full max-w-xs">
+          <p className="text-xs text-muted-foreground uppercase tracking-widest mb-3">Recommended timeframes</p>
+          {tfs.map((tf, i) => (
+            <div key={i} className="flex items-center justify-between glass rounded-lg px-4 py-2.5 text-sm">
+              <span className="text-muted-foreground">Chart {i + 1}</span>
+              <span className="font-mono font-bold text-primary">{tf}</span>
+            </div>
+          ))}
         </div>
       )}
     </div>
