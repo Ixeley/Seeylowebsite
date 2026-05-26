@@ -271,10 +271,23 @@ exports.handler = async (event) => {
     }
 
     const data = await res.json();
-    const raw = data.choices?.[0]?.message?.content ?? "";
+    const choice = data.choices?.[0];
+    const finishReason = choice?.finish_reason;
+
+    if (finishReason === "content_filter")
+      return { statusCode: 422, body: JSON.stringify({ error: "Content filtered by OpenAI — try a different chart or trade style." }) };
+
+    const refusal = choice?.message?.refusal;
+    if (refusal)
+      return { statusCode: 422, body: JSON.stringify({ error: `OpenAI refused: ${refusal}` }) };
+
+    const raw = choice?.message?.content ?? "";
+    if (!raw)
+      return { statusCode: 500, body: JSON.stringify({ error: `No content returned (finish_reason: ${finishReason ?? "unknown"})` }) };
+
     const clean = raw.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
     const m = clean.match(/\{[\s\S]*\}/);
-    if (!m) return { statusCode: 500, body: JSON.stringify({ error: "Cannot parse response" }) };
+    if (!m) return { statusCode: 500, body: JSON.stringify({ error: `Cannot parse response: ${raw.slice(0, 120)}` }) };
 
     return { statusCode: 200, headers: { "Content-Type": "application/json" }, body: m[0] };
   } catch (err) {
