@@ -139,22 +139,145 @@ const SCHEMA = `{
   "rewardDollars": <|entry-TP2| × dollarPerPoint>,
   "confidence": <integer 40-92, honest>,
   "entryMode": "standard" or "fast",
-  "setupType": "<named ICT setup — e.g. 'Silver Bullet', 'OTE Long', 'Turtle Soup', 'OB Mitigation', 'FVG Fill', 'Liquidity Grab + Reversal'>",
-  "tradeSetup": "<1 sentence with exact prices — e.g. 'Long from 4H Bullish OB 19,820–19,850 after 15m CHoCH at 19,870, targeting BSL @ 19,980'>",
-  "reasoning": "<5 sentences: 1) structure/bias with BOS prices 2) OB/FVG confluence with exact zones 3) momentum/displacement 4) liquidity target logic 5) invalidation>",
+  "strategy": "<strategy name: 'ICT/SMC' | 'Wyckoff' | 'Elliott Wave' | 'Classic TA'>",
+  "holdTime": "<specific hold duration for THIS trade — e.g. '2–4 hours', 'Until NY close at 21:00 UTC', '15–45 minutes', 'Overnight, exit pre-London open', 'Hold 1–3 days to next swing'>",
+  "setupType": "<named setup — e.g. 'Silver Bullet', 'OTE Long', 'Spring Phase C', 'Wave 3 Extension', 'Bull Flag Breakout', 'RSI Divergence Reversal'>",
+  "tradeSetup": "<1 sentence with exact prices>",
+  "reasoning": "<5 sentences: 1) structure/bias 2) entry confluence 3) momentum 4) target logic 5) invalidation>",
   "whyDirection": "<3 numbered points with exact prices>",
   "marketCondition": "<1 sentence: trending/ranging/overextended/consolidating>",
   "newsContext": "<1-2 sentences: macro/news context for this symbol today>",
   "keyLevels": [
     {
-      "type": "order_block"|"fvg"|"liquidity"|"bos"|"choch"|"support"|"resistance",
+      "type": "order_block"|"fvg"|"liquidity"|"bos"|"choch"|"support"|"resistance"|"fibonacci",
       "priceHigh": <zone top>,
       "priceLow": <zone bottom>,
       "timeframe": "<TF this level is from — e.g. '4H', '15m', '1m', '1H'>",
-      "description": "<precise e.g. '4H Bullish OB: 19,820–19,850' or '15m FVG: 19,870–19,895' or '1m CHoCH @ 19,870'>"
+      "description": "<precise level description with exact prices>"
     }
   ]
 }`;
+
+const WYCKOFF_KNOWLEDGE = `
+=== WYCKOFF METHOD — MASTER REFERENCE ===
+
+PHASES (Accumulation & Distribution):
+- Phase A: Stopping the prior trend. PSY (Preliminary Supply/Support), SC (Selling Climax) / BC (Buying Climax), AR (Automatic Rally/Reaction), ST (Secondary Test).
+- Phase B: Building the cause. Multiple tests of support/resistance. High-volume upthrusts or springs possible. Range defined.
+- Phase C: The test. Spring (false breakdown below support — shakeout) or Upthrust (false breakout above resistance — trap). This is the ENTRY phase — highest reward.
+- Phase D: Trend within range. SOS (Sign of Strength) for accumulation / SOW (Sign of Weakness) for distribution. LPS (Last Point of Support) = best re-entry.
+- Phase E: Mark-up/Mark-down. Price leaves range. Trend move in full effect.
+
+SPRINGS & UPTHRUSTS (Phase C setups):
+- Spring: price breaks below support, immediately reverses, closes above — stops triggered, smart money absorbs all selling.
+- Spring quality: No Supply bar after spring (narrow spread, low volume) = highest quality. Strong SOS confirms.
+- Upthrust: price breaks above resistance, immediately reverses — stops above cleared, distribution begins.
+- Test of Spring: subsequent re-test of spring low on low volume = confirm + re-entry.
+
+SIGNS:
+- SOS: wide spread bar up, closes near high, high volume — demand is in control.
+- SOW: wide spread bar down, closes near low, high volume — supply is in control.
+- No Supply: narrow spread, closes up, low volume — no selling pressure, continuation expected.
+- No Demand: narrow spread, closes down, low volume — no buying pressure, reversal/weakness expected.
+
+CAUSE & EFFECT:
+- P&F count (point and figure) across the base range = measure of the move.
+- Wider/longer base = larger potential move.
+- TP targets = width × scale projected from breakout level.
+
+ENTRY RULES:
+- Enter on Spring/Upthrust with confirming SOS/SOW
+- Re-enter on LPS (Last Point of Support) after SOS in Phase D
+- Stop: below Spring low (for longs) or above Upthrust high (for shorts)
+- Target: top of range + cause projection for Phase E move`;
+
+const ELLIOTT_KNOWLEDGE = `
+=== ELLIOTT WAVE — MASTER REFERENCE ===
+
+IMPULSE WAVES (5-wave move in trend direction):
+- Wave 1: initial move, often weak, overlooked by most traders.
+- Wave 2: retracement of Wave 1. CANNOT retrace more than 100% of Wave 1. Often 50–61.8% Fib retrace.
+- Wave 3: strongest and longest wave. CANNOT be the shortest. Typically 1.618×–2.618× Wave 1. Best entry.
+- Wave 4: consolidation. CANNOT overlap Wave 1's price territory (in non-leveraged markets). Often 38.2% retrace.
+- Wave 5: final push. Often equals Wave 1 length. Momentum divergence common. Look for reversal after.
+
+CORRECTIVE WAVES (3-wave move against trend):
+- ABC correction: A (impulse against trend), B (retrace of A, often 50–61.8%), C (final leg, often equals A).
+- Zigzag (5-3-5): sharp correction, B shallow (<61.8% of A).
+- Flat (3-3-5): sideways correction, B retraces ~100% of A, C equals A.
+- Triangle (3-3-3-3-3): contracting or expanding, always in Wave 4 or Wave B position.
+
+FIBONACCI RELATIONSHIPS:
+- Wave 2 target: 50%, 61.8% of Wave 1.
+- Wave 3 target: 161.8%, 261.8% of Wave 1 (measured from Wave 2 low).
+- Wave 4 target: 38.2% of Wave 3.
+- Wave 5 target: equal to Wave 1, or 61.8% of Waves 1+3.
+- Wave C target: 100%, 161.8% of Wave A.
+
+ENTRY STRATEGY:
+- Best entry: end of Wave 2 (buy) or end of Wave 4 (continuation). Use Fib zones.
+- Wave 3 confirmation: break of Wave 1 high with momentum (MACD crossover, volume surge).
+- Stop: for Wave 2 entry — below Wave 1 origin. For Wave 4 entry — below Wave 1 top.
+- Target: Wave 3 = 161.8% extension of Wave 1 from Wave 2 low.
+- Divergence at Wave 5 peak = high-probability reversal signal.`;
+
+const CLASSIC_TA_KNOWLEDGE = `
+=== CLASSIC TECHNICAL ANALYSIS — MASTER REFERENCE ===
+
+SUPPORT & RESISTANCE:
+- Key S/R: previous swing highs/lows, round numbers, weekly/monthly highs/lows.
+- More touches = stronger level. First touch after breakout = highest probability.
+- Polarity: broken support becomes resistance, broken resistance becomes support.
+
+CHART PATTERNS:
+- Head & Shoulders (H&S): bearish reversal. Neckline break = entry. Target = head-to-neckline distance projected down.
+- Inverse H&S: bullish reversal. Same logic, projected up.
+- Double Top/Bottom: reversal at key level. Entry on neckline break. Target = pattern height.
+- Triangles: Ascending (bullish bias), Descending (bearish bias), Symmetrical (continuation in trend direction). Entry on breakout candle close.
+- Bull/Bear Flag: continuation pattern. Tight consolidation on low volume after impulse. Entry on break of flag upper/lower bound.
+- Cup & Handle: bullish. Entry on handle breakout. Target = cup depth from breakout.
+
+MOVING AVERAGES:
+- EMA 20/50/200: dynamic S/R. Price above all 3 EMAs = strong uptrend.
+- Golden Cross (50 EMA > 200 EMA): bullish signal. Death Cross: bearish signal.
+- EMA 20 = fastest momentum. EMA 200 = long-term trend direction.
+- Price between EMA 20 and 50 = pullback zone in uptrend.
+
+RSI (14):
+- Overbought: >70. Oversold: <30.
+- Bullish divergence: price makes lower low, RSI makes higher low = reversal signal.
+- Bearish divergence: price makes higher high, RSI makes lower high = reversal signal.
+- RSI 50 cross = momentum confirmation of trend change.
+
+MACD (12,26,9):
+- Bullish crossover (MACD line > signal line): buy signal.
+- Bearish crossover: sell signal.
+- Histogram divergence with price = leading reversal signal.
+- Best used in trending markets, not ranges.
+
+VOLUME:
+- Volume confirms breakouts. Breakout on low volume = likely false breakout.
+- Volume spike at reversal points = climactic selling/buying.
+- Decreasing volume in trend = exhaustion approaching.
+
+ENTRY RULES:
+- Entry at S/R bounce with momentum confirmation (RSI oversold/overbought, pin bar, engulfing candle).
+- Pattern breakout entry: wait for candle CLOSE beyond breakout level.
+- Stop: below the S/R level tested, or below pattern invalidation point.
+- Target: next major S/R level, or pattern projection.`;
+
+function getSystem(strategy) {
+  switch (strategy) {
+    case "Wyckoff":
+      return `You are a master Wyckoff Method analyst with 20+ years of institutional trading experience. You apply Richard D. Wyckoff's Law of Supply and Demand, Cause and Effect, and Effort vs. Result exclusively.\n\n${WYCKOFF_KNOWLEDGE}\n\nRESPONSE RULES:\n- Respond ONLY with valid JSON — no markdown, no text outside JSON\n- Identify the Wyckoff phase precisely (A/B/C/D/E) and the exact event (Spring, Upthrust, LPS, SOS, SOW)\n- Be honest about confidence: most valid setups are 55-75%\n- If phase is unclear or chart shows mixed signals → noTrade=true`;
+    case "Elliott Wave":
+      return `You are a certified Elliott Wave analyst with expertise in R.N. Elliott's Wave Principle and Robert Prechter's methodology. You count waves precisely and use Fibonacci relationships for targets.\n\n${ELLIOTT_KNOWLEDGE}\n\nRESPONSE RULES:\n- Respond ONLY with valid JSON — no markdown, no text outside JSON\n- State the current wave count clearly (e.g. 'In Wave 3 of 5 impulse up')\n- Use Fibonacci extensions for TP targets and retracements for entry\n- If wave count is ambiguous or invalidation criteria are close → reduce confidence or noTrade=true`;
+    case "Classic TA":
+      return `You are a veteran technical analyst with 20+ years applying classical technical analysis. You use chart patterns, support/resistance, moving averages, RSI, MACD, and volume exclusively.\n\n${CLASSIC_TA_KNOWLEDGE}\n\nRESPONSE RULES:\n- Respond ONLY with valid JSON — no markdown, no text outside JSON\n- Identify the exact pattern or setup name (e.g. 'Bull Flag', 'Resistance Bounce', 'RSI Divergence')\n- Require volume confirmation for breakout entries\n- Be honest about confidence: pattern breakouts without volume = 50% max`;
+    default: // ICT/SMC
+      return `You are a senior ICT (Inner Circle Trader) and Smart Money Concepts (SMC) specialist with 15+ years on institutional prop firm trading desks. You have mastered Michael J. Huddleston's ICT methodology and apply it exclusively.\n\n${ICT_KNOWLEDGE}\n\nRESPONSE RULES:\n- Respond ONLY with valid JSON — no markdown, no text outside JSON\n- Be brutally honest about confidence — most setups are 55-72%, not 85%+`;
+  }
+}
 
 const SYSTEM = `You are a senior ICT (Inner Circle Trader) and Smart Money Concepts (SMC) specialist with 15+ years on institutional prop firm trading desks. You have mastered Michael J. Huddleston's ICT methodology and apply it exclusively.
 
@@ -177,7 +300,47 @@ function sessionFromUTC() {
   return "Off-hours";
 }
 
-function buildPrompt(tradeStyle, entryMode, chartCount) {
+const STRATEGY_STEPS = {
+  "ICT/SMC": `1. Read symbol EXACTLY character-by-character from chart label
+2. Read currentPrice precisely from right axis
+3. Check NO-TRADE conditions — if any → noTrade=true immediately
+4. Check economic calendar for HIGH-impact events next 2 hrs → flag upcomingNews
+5. Top-down ICT analysis: structure → OBs → FVGs → liquidity → entry
+6. Identify named setup type (Silver Bullet, OTE, Turtle Soup, OB Mitigation, etc.)
+7. For each keyLevel: include timeframe field
+8. Assign annotateChartIndex = lowest TF chart index
+9. Realistic probabilities using obstacle counting
+10. Set holdTime based on: distance to TP2, current session time, and trade style`,
+  "Wyckoff": `1. Read symbol EXACTLY from chart label, read currentPrice from right axis
+2. Identify the Wyckoff Phase (A/B/C/D/E) and the primary event (SC, AR, ST, Spring, Upthrust, SOS, SOW, LPS)
+3. Check NO-TRADE conditions — if phase is unclear or in middle of Phase B → noTrade=true
+4. Check for high-impact news next 2 hrs → flag upcomingNews
+5. Confirm volume signature: Spring/SOS needs confirming bar. Note No Supply / No Demand bars.
+6. Set entry at Spring low test or LPS with confirming SOS
+7. Set TP targets using cause projection (range width × multiplier from breakout)
+8. Set holdTime based on: expected Phase D/E duration and trade style
+9. keyLevels: mark SC, AR, ST, Spring/Upthrust, Creek/ICE levels`,
+  "Elliott Wave": `1. Read symbol EXACTLY from chart label, read currentPrice from right axis
+2. Count the Elliott Wave structure visible on chart — state current wave number and degree
+3. Check NO-TRADE conditions — if count is ambiguous or alternate count is equally valid → noTrade=true
+4. Verify key wave rules: Wave 2 < Wave 1 start, Wave 3 not shortest, Wave 4 no overlap with Wave 1
+5. Calculate Fibonacci extension targets for TPs and retracement for entry zone
+6. Entry: end of Wave 2 (for Wave 3 ride) or end of Wave 4 (continuation)
+7. SL: below Wave 2 low (for Wave 3 entry) or below Wave 4 low (continuation)
+8. Set holdTime based on wave degree and expected wave completion timeframe
+9. keyLevels: mark wave pivots with Fibonacci levels`,
+  "Classic TA": `1. Read symbol EXACTLY from chart label, read currentPrice from right axis
+2. Identify the primary chart pattern or setup (H&S, Double Top/Bottom, Flag, Triangle, S/R bounce)
+3. Check NO-TRADE conditions — if no clear pattern or S/R, or price is mid-range → noTrade=true
+4. Check for high-impact news next 2 hrs → flag upcomingNews
+5. Confirm RSI/MACD momentum alignment with direction. Check volume for breakout confirmation.
+6. Entry: at S/R level bounce with confirming candle, or breakout close above/below pattern
+7. TP targets: use pattern projection or next major S/R level
+8. Set holdTime based on: pattern target distance, current momentum, and trade style
+9. keyLevels: mark key S/R levels, pattern boundaries, moving average levels`,
+};
+
+function buildPrompt(tradeStyle, entryMode, chartCount, strategy) {
   const session = sessionFromUTC();
   const sessionNote = SESSION_INFO[session] ?? SESSION_INFO["Off-hours"];
   const now = new Date();
@@ -186,48 +349,47 @@ function buildPrompt(tradeStyle, entryMode, chartCount) {
   const estStr = `${estH}:${String(now.getUTCMinutes()).padStart(2,"0")} EST`;
 
   const styles = {
-    "Scalp":       { tf: "1m–5m", hold: "5–30 min", slPts: "8–20 NQ pts" },
-    "Day Trade":   { tf: "15m–1H", hold: "1–4 hrs", slPts: "20–45 NQ pts" },
-    "Swing Trade": { tf: "4H–1D", hold: "overnight+", slPts: "50–120 NQ pts" },
+    "Scalp":       { tf: "1m–5m", slPts: "8–20 NQ pts", holdHint: "5–45 minutes typically — adjust based on TP distance and session time remaining" },
+    "Day Trade":   { tf: "15m–1H", slPts: "20–45 NQ pts", holdHint: "1–6 hours typically — account for session transitions and news risks" },
+    "Swing Trade": { tf: "4H–1D", slPts: "50–120 NQ pts", holdHint: "1–5 days typically — overnight holds are expected, consider weekend risk" },
   };
   const s = styles[tradeStyle] ?? styles["Day Trade"];
 
   const entryInstr = entryMode === "fast"
     ? `ENTRY MODE: FAST (near-market limit)
-- Find nearest 1m OB, micro FVG, or micro CHoCH within 3-8 ticks of currentPrice
+- Find nearest micro-structure entry within 3-8 ticks of currentPrice
 - Entry = edge of that micro-structure closest to currentPrice
-- Fallback: currentPrice ± 3 ticks toward trade direction
-- SL: behind nearest micro-structure, max ${tradeStyle === "Scalp" ? 12 : 22} pts from entry`
+- SL: behind nearest structure, max ${tradeStyle === "Scalp" ? 12 : 22} pts from entry`
     : `ENTRY MODE: STANDARD (limit at key level)
-- Entry at OB midpoint/edge or FVG midpoint — price must retrace there
-- State distance from currentPrice to entry (how far must price retrace)`;
+- Entry at key level — price must retrace there
+- State distance from currentPrice to entry`;
 
   const multiChart = chartCount > 1 ? `
 MULTI-TIMEFRAME ANALYSIS (${chartCount} charts uploaded):
 - Analyze each chart independently first
 - Chart with highest TF = bias/structure. Chart with lowest TF = entry.
-- annotateChartIndex = index of the LOWEST timeframe chart (use for drawing)
-- If charts conflict on direction → noTrade=true, explain conflict in noTradeReason
-- All keyLevels must have timeframe field indicating which chart they come from` : "";
+- annotateChartIndex = index of the LOWEST timeframe chart (0-based)
+- If charts conflict on direction → noTrade=true
+- All keyLevels must have timeframe field` : "";
+
+  const steps = STRATEGY_STEPS[strategy] ?? STRATEGY_STEPS["ICT/SMC"];
 
   return `Time: ${utcStr} (${estStr})
 ${sessionNote}
 
-STYLE: ${tradeStyle} | TF: ${s.tf} | Hold: ${s.hold} | SL: ${s.slPts}
+STRATEGY: ${strategy ?? "ICT/SMC"} | STYLE: ${tradeStyle} | TF: ${s.tf} | SL guide: ${s.slPts}
+HOLD TIME GUIDANCE: ${s.holdHint}
 ${entryInstr}
 ${multiChart}
 
 STEPS:
-1. Read symbol EXACTLY character-by-character from chart label
-2. Read currentPrice precisely from right axis
-3. Check NO-TRADE conditions — if any → noTrade=true immediately
-4. Check economic calendar for HIGH-impact events next 2 hrs → flag upcomingNews
-5. Top-down ICT analysis: structure → OBs → FVGs → liquidity → entry
-6. Identify named setup type (Silver Bullet, OTE, Turtle Soup, etc.)
-7. For each keyLevel: include timeframe field (which chart/TF it is from)
-8. Assign annotateChartIndex = lowest TF chart index (0-based)
-9. Realistic probabilities using obstacle counting
-10. Verify R:R ≥ 2.5
+${steps}
+
+IMPORTANT FOR holdTime: Do NOT use a generic range. Calculate the specific hold based on:
+- Distance from entry to TP2 relative to ATR/typical candle size
+- Current session (${session}) and time until session end
+- Trade style (${tradeStyle})
+- Example specific values: "Until NY close ~21:00 UTC", "45–90 minutes", "2–3 sessions", "Exit before Friday close"
 
 JSON schema:
 ${SCHEMA}`;
@@ -243,17 +405,19 @@ exports.handler = async (event) => {
   try { body = JSON.parse(event.body); }
   catch { return { statusCode: 400, body: "Invalid JSON" }; }
 
-  const { images, tradeStyle, entryMode } = body;
+  const { images, tradeStyle, entryMode, strategy } = body;
   if (!Array.isArray(images) || images.length === 0)
     return { statusCode: 400, body: "No images" };
 
+  const systemPrompt = getSystem(strategy ?? "ICT/SMC");
+
   const messages = [
-    { role: "system", content: SYSTEM },
+    { role: "system", content: systemPrompt },
     {
       role: "user",
       content: [
         ...images.map((img) => ({ type: "image_url", image_url: { url: img, detail: "high" } })),
-        { type: "text", text: buildPrompt(tradeStyle ?? "Day Trade", entryMode ?? "standard", images.length) },
+        { type: "text", text: buildPrompt(tradeStyle ?? "Day Trade", entryMode ?? "standard", images.length, strategy ?? "ICT/SMC") },
       ],
     },
   ];

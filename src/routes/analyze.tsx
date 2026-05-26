@@ -8,7 +8,7 @@ import { AnalysisResult } from "@/components/AnalysisResult";
 import { ChartCanvas } from "@/components/ChartCanvas";
 import {
   analyzeChart, checkNewsForSymbol, getCurrentSession, getPlanSlotCount, SLOT_TIMEFRAMES,
-  type TradeAnalysis, type EntryMode, type Plan,
+  type TradeAnalysis, type EntryMode, type Plan, type Strategy,
 } from "@/lib/openai";
 import { saveAnalysis } from "@/lib/mockAnalysis";
 import { useAuth } from "@/lib/auth";
@@ -21,6 +21,43 @@ export const Route = createFileRoute("/analyze")({
 const STYLES = ["Scalp", "Day Trade", "Swing Trade"] as const;
 type Style = (typeof STYLES)[number];
 
+const STRATEGIES: Strategy[] = ["ICT/SMC", "Wyckoff", "Elliott Wave", "Classic TA"];
+
+const STRATEGY_LOADING: Record<Strategy, string[]> = {
+  "ICT/SMC": [
+    "Reading chart symbol & timeframe...",
+    "Mapping market structure & BOS...",
+    "Identifying Order Blocks & FVGs...",
+    "Locating liquidity pools & targets...",
+    "Calculating probabilities & R:R...",
+    "Finalizing trade parameters...",
+  ],
+  "Wyckoff": [
+    "Reading chart symbol & timeframe...",
+    "Identifying Wyckoff phase...",
+    "Detecting Springs & Upthrusts...",
+    "Mapping accumulation/distribution...",
+    "Calculating cause & effect targets...",
+    "Finalizing trade parameters...",
+  ],
+  "Elliott Wave": [
+    "Reading chart symbol & timeframe...",
+    "Counting Elliott Wave structure...",
+    "Identifying impulse & corrective waves...",
+    "Projecting Fibonacci extensions...",
+    "Validating wave rules & guidelines...",
+    "Finalizing trade parameters...",
+  ],
+  "Classic TA": [
+    "Reading chart symbol & timeframe...",
+    "Mapping support & resistance...",
+    "Identifying chart patterns...",
+    "Checking RSI & momentum...",
+    "Calculating targets & invalidation...",
+    "Finalizing trade parameters...",
+  ],
+};
+
 const PLAN_UPGRADE: Record<Plan, string> = {
   free: "Upgrade to Basic",
   basic: "Upgrade to Pro",
@@ -28,14 +65,6 @@ const PLAN_UPGRADE: Record<Plan, string> = {
   platinum: "",
 };
 
-const LOADING_STEPS = [
-  "Reading chart symbol & timeframe...",
-  "Mapping market structure & BOS...",
-  "Identifying Order Blocks & FVGs...",
-  "Locating liquidity pools & targets...",
-  "Calculating probabilities & R:R...",
-  "Finalizing trade parameters...",
-];
 
 const SESSION_COLORS: Record<string, string> = {
   "Asian":            "text-cyan-400 border-cyan-400/30 bg-cyan-400/10",
@@ -49,6 +78,7 @@ function AnalyzePage() {
   const { profile } = useAuth();
   const plan: Plan = "platinum";
   const [tradeStyle, setTradeStyle] = useState<Style>("Day Trade");
+  const [strategy, setStrategy] = useState<Strategy>("ICT/SMC");
   const [entryMode, setEntryMode] = useState<EntryMode>("standard");
   const [images, setImages] = useState<(string | null)[]>([null, null, null]);
   const [loading, setLoading] = useState(false);
@@ -94,7 +124,7 @@ function AnalyzePage() {
     }, 900);
 
     try {
-      const result = await analyzeChart(uploadedImages, tradeStyle, entryMode, plan);
+      const result = await analyzeChart(uploadedImages, tradeStyle, entryMode, plan, strategy);
       clearInterval(stepInterval);
       setAnalysis(result);
 
@@ -161,7 +191,7 @@ function AnalyzePage() {
             <div className="flex flex-wrap items-center gap-2 mb-3">
               <div className="inline-flex items-center gap-2 rounded-full glass px-3 py-1 text-xs text-muted-foreground">
                 <span className="h-1.5 w-1.5 rounded-full bg-bullish animate-pulse" />
-                GPT-4o Vision · ICT/SMC
+                GPT-4o Vision · {strategy}
               </div>
               <div className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium ${sessionCls}`}>
                 <Clock className="h-3 w-3" /> {session} session
@@ -189,7 +219,7 @@ function AnalyzePage() {
           </a>
         </div>
 
-        {/* Trade style + entry mode */}
+        {/* Trade style + strategy + entry mode */}
         <div className="mb-8 flex flex-wrap gap-6 items-start">
           <div className="flex-1 min-w-[220px] max-w-sm">
             <span className="text-xs uppercase tracking-widest text-muted-foreground">Trade Style</span>
@@ -202,6 +232,25 @@ function AnalyzePage() {
                     tradeStyle === s
                       ? "bg-primary text-primary-foreground border-primary glow-primary-sm"
                       : "glass border-border text-muted-foreground hover:text-foreground hover:border-primary/40"
+                  }`}
+                >
+                  {s}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <span className="text-xs uppercase tracking-widest text-muted-foreground">Strategy</span>
+            <div className="mt-2 flex gap-2 flex-wrap">
+              {STRATEGIES.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setStrategy(s)}
+                  className={`rounded-xl border px-3 py-2.5 text-sm font-medium transition ${
+                    strategy === s
+                      ? "bg-primary/20 border-primary/60 text-primary"
+                      : "glass border-border text-muted-foreground hover:text-foreground hover:border-primary/30"
                   }`}
                 >
                   {s}
@@ -303,7 +352,7 @@ function AnalyzePage() {
 
           {/* Right: results */}
           <div className="space-y-4">
-            {loading && <LoadingState step={loadingStep} chartCount={uploadedImages.length} />}
+            {loading && <LoadingState step={loadingStep} chartCount={uploadedImages.length} strategy={strategy} />}
             {!loading && analysis && (
               <>
 
@@ -456,7 +505,8 @@ function LoadingButton() {
   );
 }
 
-function LoadingState({ step, chartCount }: { step: number; chartCount: number }) {
+function LoadingState({ step, chartCount, strategy }: { step: number; chartCount: number; strategy: Strategy }) {
+  const LOADING_STEPS = STRATEGY_LOADING[strategy];
   return (
     <div className="glass-strong rounded-2xl p-8 min-h-[380px] flex flex-col items-center justify-center text-center">
       {/* Orbital scanning animation */}

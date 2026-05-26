@@ -14,6 +14,7 @@ export interface KeyLevel {
 
 export type EntryMode = "standard" | "fast";
 export type Plan = "free" | "basic" | "pro" | "platinum";
+export type Strategy = "ICT/SMC" | "Wyckoff" | "Elliott Wave" | "Classic TA";
 
 export interface TradeAnalysis {
   noTrade?: boolean;
@@ -34,6 +35,8 @@ export interface TradeAnalysis {
   rewardDollars: number;
   confidence: number;
   entryMode: EntryMode;
+  strategy?: Strategy;
+  holdTime?: string;
   tradeSetup: string;
   reasoning: string;
   whyDirection: string;
@@ -112,13 +115,14 @@ export async function analyzeChart(
   tradeStyle: string,
   entryMode: EntryMode = "standard",
   plan: Plan = "basic",
+  strategy: Strategy = "ICT/SMC",
 ): Promise<TradeAnalysis> {
   const compressed = await Promise.all(imageDataUrls.map(compressImage));
 
   const res = await fetch("/.netlify/functions/analyze-chart", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ images: compressed, tradeStyle, entryMode, plan }),
+    body: JSON.stringify({ images: compressed, tradeStyle, entryMode, plan, strategy }),
   });
 
   if (!res.ok) {

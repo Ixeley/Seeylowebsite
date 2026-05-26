@@ -64,12 +64,17 @@ export function AnalysisResult({ analysis: a, tradeStyle, onReset, onReanalyze }
       {/* ── Header ──────────────────────────────────────────── */}
       <div className="flex items-start justify-between">
         <div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1 flex-wrap">
             <Sparkles className="h-3 w-3 text-primary" />
-            GPT-4o · ICT/SMC
+            GPT-4o · {a.strategy ?? "ICT/SMC"}
             {isFast && <span className="flex items-center gap-1 text-yellow-400"><Zap className="h-3 w-3" />Fast</span>}
             {a.setupType && (
               <span className="rounded-full border border-primary/40 bg-primary/10 text-primary px-2 py-0.5 text-[10px] font-semibold">{a.setupType}</span>
+            )}
+            {a.holdTime && (
+              <span className="flex items-center gap-1 rounded-full border border-cyan-400/30 bg-cyan-400/10 text-cyan-400 px-2 py-0.5 text-[10px] font-semibold">
+                <Clock className="h-2.5 w-2.5" />{a.holdTime}
+              </span>
             )}
           </div>
           <div className="flex items-baseline gap-2">
