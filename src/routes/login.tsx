@@ -30,11 +30,10 @@ function LoginPage() {
     useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null),
   ];
 
-  // Redirect if already logged in with profile
+  // Redirect if already logged in
   useEffect(() => {
-    if (user && profile) navigate({ to: "/analyze" });
-    else if (user && !profile) navigate({ to: "/onboard" });
-  }, [user, profile]);
+    if (user) navigate({ to: "/dashboard" });
+  }, [user]);
 
   // Resend countdown
   useEffect(() => {
@@ -101,7 +100,7 @@ function LoginPage() {
     setLoading(true);
     const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
-      options: { redirectTo: `${window.location.origin}/onboard` },
+      options: { redirectTo: `${window.location.origin}/dashboard` },
     });
     if (error) { toast.error(error.message); setLoading(false); }
   };
