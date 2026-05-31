@@ -1,0 +1,339 @@
+//@version=5
+strategy(
+     title            = "PropTrader — SMA Cross + ATR Risk",
+     shorttitle       = "PT-SMACross",
+     overlay          = true,
+     initial_capital  = 50000,
+     default_qty_type = strategy.fixed,
+     default_qty_value= 1,
+     currency         = currency.USD,
+     commission_type  = strategy.commission.cash_per_contract,
+     commission_value = 2.50,
+     slippage         = 1,
+     max_bars_back    = 500,
+     calc_on_every_tick = false)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  INPUTS  (mirror the risk-engine.js / strategy.js defaults)
+// ══════════════════════════════════════════════════════════════════════════════
+var GRP_STRATEGY = "Strategy"
+i_fastLen   = input.int(9,    "Fast SMA length",   group=GRP_STRATEGY, minval=2)
+i_slowLen   = input.int(21,   "Slow SMA length",   group=GRP_STRATEGY, minval=3)
+i_atrLen    = input.int(14,   "ATR length",        group=GRP_STRATEGY, minval=1)
+i_slMult    = input.float(2.0,"Stop  ATR mult",    group=GRP_STRATEGY, minval=0.1, step=0.1)
+i_tpMult    = input.float(4.0,"Target ATR mult",   group=GRP_STRATEGY, minval=0.1, step=0.1)
+
+var GRP_RISK = "Risk Engine"
+i_balance   = input.float(50000, "Account balance ($)",    group=GRP_RISK,  minval=1000)
+i_riskPct   = input.float(1.0,   "Risk per trade (%)",     group=GRP_RISK,  minval=0.1, maxval=10, step=0.1)
+i_tickVal   = input.float(50.0,  "$ per point (ES = 50)",  group=GRP_RISK,  minval=1)
+i_maxContr  = input.int(3,       "Max contracts",          group=GRP_RISK,  minval=1)
+i_consist   = input.float(0.30,  "Consistency cap (0–1)",  group=GRP_RISK,  minval=0.01, maxval=1, step=0.01)
+i_profitTgt = input.float(1000,  "Daily profit target ($)", group=GRP_RISK, minval=0)
+i_lossLimit = input.float(500,   "Daily loss limit ($)",   group=GRP_RISK,  minval=0)
+i_trailDD   = input.float(2000,  "Trailing max drawdown ($)", group=GRP_RISK, minval=0)
+
+var GRP_VIS = "Visuals"
+i_showLevels = input.bool(true,  "Show SL / TP lines",  group=GRP_VIS)
+i_showLabels = input.bool(true,  "Show entry labels",   group=GRP_VIS)
+i_showBg     = input.bool(true,  "Colour trade bars",   group=GRP_VIS)
+i_showTable  = input.bool(true,  "Show stats table",    group=GRP_VIS)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  INDICATORS
+// ══════════════════════════════════════════════════════════════════════════════
+fastSMA = ta.sma(close, i_fastLen)
+slowSMA = ta.sma(close, i_slowLen)
+atrVal  = ta.atr(i_atrLen)
+
+plot(fastSMA, "Fast SMA", color=color.new(#00e5ff, 0),  linewidth=2)
+plot(slowSMA, "Slow SMA", color=color.new(#ff2d9b, 0),  linewidth=2)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DAILY SESSION TRACKING
+// ══════════════════════════════════════════════════════════════════════════════
+isNewDay = ta.change(time("D")) != 0
+
+var float dayStartEquity  = strategy.initial_capital
+var float hwm             = strategy.initial_capital   // high-water mark for trailing DD
+var int   cooldownBar     = 0                          // last signal bar (10-tick cooldown)
+
+if isNewDay
+    dayStartEquity := strategy.equity
+    // High-water mark only resets if equity is above previous hwm at day start
+    hwm := math.max(hwm, strategy.equity)
+
+// Update HWM on every bar
+hwm := math.max(hwm, strategy.equity)
+
+dailyPnL      = strategy.equity - dayStartEquity
+trailingDD    = hwm - strategy.equity
+
+limitHit = (i_profitTgt > 0 and dailyPnL >=  i_profitTgt) or
+           (i_lossLimit > 0 and dailyPnL <= -i_lossLimit) or
+           (i_trailDD   > 0 and trailingDD >= i_trailDD)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  POSITION-SIZE CALCULATION  (mirrors risk-engine.js: calculatePositionSize)
+// ══════════════════════════════════════════════════════════════════════════════
+calcQty(entryPrice, stopPrice) =>
+    riskBudget     = i_balance * (i_riskPct / 100.0)
+    pointsAtRisk   = math.abs(entryPrice - stopPrice)
+    dollarPerContr = pointsAtRisk * i_tickVal
+    if dollarPerContr <= 0
+        0
+    else
+        // Consistency rule: cap risk per trade at consistencyPct of profitTarget
+        consistCap   = i_consist * i_profitTgt
+        effectiveBudget = i_profitTgt > 0 ? math.min(riskBudget, consistCap) : riskBudget
+        rawQty       = math.floor(effectiveBudget / dollarPerContr)
+        int(math.min(rawQty, i_maxContr))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNALS  (SMA crossover, 10-bar cooldown)
+// ══════════════════════════════════════════════════════════════════════════════
+longCross  = ta.crossover( fastSMA, slowSMA)
+shortCross = ta.crossunder(fastSMA, slowSMA)
+
+cooldownOk = (bar_index - cooldownBar) >= 10
+
+longSignal  = longCross  and cooldownOk and not limitHit and strategy.position_size == 0
+shortSignal = shortCross and cooldownOk and not limitHit and strategy.position_size == 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ENTRY LEVELS
+// ══════════════════════════════════════════════════════════════════════════════
+longSL  = close - atrVal * i_slMult
+longTP  = close + atrVal * i_tpMult
+shortSL = close + atrVal * i_slMult
+shortTP = close - atrVal * i_tpMult
+
+longQty  = longSignal  ? calcQty(close, longSL)  : 0
+shortQty = shortSignal ? calcQty(close, shortSL) : 0
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  STRATEGY ORDERS
+// ══════════════════════════════════════════════════════════════════════════════
+if longSignal and longQty > 0
+    strategy.entry("Long", strategy.long,  qty=longQty)
+    strategy.exit( "Long-X", "Long",  stop=longSL,  limit=longTP)
+    cooldownBar := bar_index
+
+if shortSignal and shortQty > 0
+    strategy.entry("Short", strategy.short, qty=shortQty)
+    strategy.exit( "Short-X", "Short", stop=shortSL, limit=shortTP)
+    cooldownBar := bar_index
+
+// Close all on limit hit
+if limitHit and strategy.position_size != 0
+    strategy.close_all(comment="Risk limit")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  LEVEL LINES ON CHART
+//  Draw horizontal lines from signal bar extending forward until hit or new bar
+// ══════════════════════════════════════════════════════════════════════════════
+var line entryLine = na
+var line slLine    = na
+var line tpLine    = na
+
+neonGreen  = color.new(#00ff88, 0)
+neonPink   = color.new(#ff2d9b, 0)
+neonCyan   = color.new(#00e5ff, 0)
+neonOrange = color.new(#ff9a00, 0)
+colWhite   = color.new(color.white, 20)
+
+if i_showLevels
+    if longSignal
+        entryLine := line.new(bar_index, close,   bar_index + 40, close,   color=colWhite,   width=1, style=line.style_dashed)
+        slLine    := line.new(bar_index, longSL,  bar_index + 40, longSL,  color=neonPink,   width=1, style=line.style_dotted)
+        tpLine    := line.new(bar_index, longTP,  bar_index + 40, longTP,  color=neonGreen,  width=1, style=line.style_dotted)
+
+    if shortSignal
+        entryLine := line.new(bar_index, close,   bar_index + 40, close,   color=colWhite,   width=1, style=line.style_dashed)
+        slLine    := line.new(bar_index, shortSL, bar_index + 40, shortSL, color=neonPink,   width=1, style=line.style_dotted)
+        tpLine    := line.new(bar_index, shortTP, bar_index + 40, shortTP, color=neonGreen,  width=1, style=line.style_dotted)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  ENTRY LABELS  (show price, SL, TP, contracts, $ risk)
+// ══════════════════════════════════════════════════════════════════════════════
+if i_showLabels
+    if longSignal and longQty > 0
+        dollarRisk = math.abs(close - longSL) * longQty * i_tickVal
+        lbl = "▲ LONG ×" + str.tostring(longQty) +
+              "\nEntry: "  + str.tostring(close,   "#.00") +
+              "  SL: "     + str.tostring(longSL,  "#.00") +
+              "  TP: "     + str.tostring(longTP,  "#.00") +
+              "\nRisk: $"  + str.tostring(dollarRisk, "#.00")
+        label.new(bar_index, low - atrVal * 0.5, lbl,
+                  color=color.new(#00ff88, 15), textcolor=color.black,
+                  style=label.style_label_up, size=size.small)
+
+    if shortSignal and shortQty > 0
+        dollarRisk = math.abs(close - shortSL) * shortQty * i_tickVal
+        lbl = "▼ SHORT ×" + str.tostring(shortQty) +
+              "\nEntry: "  + str.tostring(close,    "#.00") +
+              "  SL: "     + str.tostring(shortSL,  "#.00") +
+              "  TP: "     + str.tostring(shortTP,  "#.00") +
+              "\nRisk: $"  + str.tostring(dollarRisk, "#.00")
+        label.new(bar_index, high + atrVal * 0.5, lbl,
+                  color=color.new(#ff2d9b, 15), textcolor=color.white,
+                  style=label.style_label_down, size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIGNAL ARROWS  (plotshape — always visible in bar replay)
+// ══════════════════════════════════════════════════════════════════════════════
+plotshape(longSignal  and longQty  > 0, "Long signal",
+          shape=shape.triangleup,   style=plotshape.style_triangleup,
+          location=location.belowbar, color=neonGreen, size=size.small)
+
+plotshape(shortSignal and shortQty > 0, "Short signal",
+          shape=shape.triangledown, style=plotshape.style_triangledown,
+          location=location.abovebar, color=neonPink, size=size.small)
+
+plotshape(limitHit and not limitHit[1], "Limit hit",
+          shape=shape.xcross, style=plotshape.style_xcross,
+          location=location.abovebar, color=neonOrange, size=size.small)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BAR COLOURING
+// ══════════════════════════════════════════════════════════════════════════════
+barColor =
+     limitHit                          ? color.new(neonOrange, 80) :
+     strategy.position_size > 0        ? color.new(neonGreen,  75) :
+     strategy.position_size < 0        ? color.new(neonPink,   75) :
+     na
+
+barcolor(i_showBg ? barColor : na)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  BACKGROUND BANDS  (subtle fill between SMAs)
+// ══════════════════════════════════════════════════════════════════════════════
+bullZone = fastSMA > slowSMA
+p1 = plot(fastSMA, display=display.none)
+p2 = plot(slowSMA, display=display.none)
+fill(p1, p2,
+     color = bullZone
+           ? color.new(#00ff88, 92)
+           : color.new(#ff2d9b, 92))
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  STATS TABLE  (top-right, updates on every bar)
+// ══════════════════════════════════════════════════════════════════════════════
+var table statsTable = table.new(
+     position.top_right, 2, 14,
+     bgcolor       = color.new(#07071a, 10),
+     border_color  = color.new(#00e5ff, 40),
+     border_width  = 1,
+     frame_color   = color.new(#00e5ff, 20),
+     frame_width   = 1)
+
+tableHeader(t, row, txt) =>
+    table.cell(t, 0, row, txt, bgcolor=color.new(#00e5ff, 75),
+               text_color=color.new(#07071a, 0), text_size=size.small,
+               text_halign=text.align_center)
+    table.merge_cells(t, 0, row, 1, row)
+
+tableRow(t, row, label, val, valColor) =>
+    table.cell(t, 0, row, label,
+               text_color=color.new(color.silver, 0), text_size=size.tiny,
+               bgcolor=color.new(#0d0d2b, 20))
+    table.cell(t, 1, row, val,
+               text_color=valColor, text_size=size.tiny,
+               bgcolor=color.new(#0d0d2b, 20),
+               text_halign=text.align_right)
+
+if i_showTable and barstate.islast
+    closed     = strategy.closedtrades
+    wins       = strategy.wintrades
+    losses     = strategy.losstrades
+    winRate    = closed > 0 ? (wins / closed) * 100 : 0.0
+    netProfit  = strategy.netprofit
+    grossWin   = strategy.grossprofit
+    grossLoss  = math.abs(strategy.grossloss)
+    pf         = grossLoss > 0 ? grossWin / grossLoss : na
+    avgWin     = wins   > 0 ? grossWin  / wins   : 0.0
+    avgLoss    = losses > 0 ? grossLoss / losses : 0.0
+    expectancy = closed > 0 ? netProfit / closed : 0.0
+    maxDD      = strategy.max_drawdown
+    trailUsed  = (trailingDD / i_trailDD) * 100
+    statusStr  = limitHit ? "🔴 LIMIT HIT" : strategy.position_size != 0 ? "🟡 IN TRADE" : "🟢 READY"
+
+    tableHeader(statsTable, 0, "⚡ PropTrader Stats")
+
+    tableRow(statsTable, 1,  "Win Rate",
+             str.tostring(winRate, "#.0") + "%",
+             winRate >= 50 ? neonGreen : neonPink)
+
+    tableRow(statsTable, 2,  "Profit Factor",
+             na(pf) ? "N/A" : str.tostring(pf, "#.00"),
+             na(pf) ? color.gray : pf >= 1.5 ? neonGreen : pf >= 1.0 ? neonOrange : neonPink)
+
+    tableRow(statsTable, 3,  "Net Profit",
+             "$" + str.tostring(netProfit, "#,###.00"),
+             netProfit >= 0 ? neonGreen : neonPink)
+
+    tableRow(statsTable, 4,  "Max Drawdown",
+             "$" + str.tostring(maxDD, "#,###.00"),
+             maxDD < i_trailDD * 0.5 ? neonGreen : maxDD < i_trailDD ? neonOrange : neonPink)
+
+    tableRow(statsTable, 5,  "Avg Win",
+             "$" + str.tostring(avgWin, "#.00"),
+             neonGreen)
+
+    tableRow(statsTable, 6,  "Avg Loss",
+             "$" + str.tostring(avgLoss, "#.00"),
+             neonPink)
+
+    tableRow(statsTable, 7,  "Expectancy / trade",
+             "$" + str.tostring(expectancy, "#.00"),
+             expectancy >= 0 ? neonGreen : neonPink)
+
+    tableRow(statsTable, 8,  "Total Trades",
+             str.tostring(closed) + " (" + str.tostring(wins) + "W / " + str.tostring(losses) + "L)",
+             color.silver)
+
+    tableHeader(statsTable, 9, "— Daily Session —")
+
+    tableRow(statsTable, 10, "Daily P&L",
+             "$" + str.tostring(dailyPnL, "#.00"),
+             dailyPnL >= 0 ? neonGreen : neonPink)
+
+    tableRow(statsTable, 11, "Trailing DD used",
+             str.tostring(math.min(trailUsed, 100), "#.0") + "% of $" + str.tostring(i_trailDD, "#,###"),
+             trailUsed < 50 ? neonGreen : trailUsed < 80 ? neonOrange : neonPink)
+
+    tableRow(statsTable, 12, "Profit tgt room",
+             "$" + str.tostring(math.max(i_profitTgt - dailyPnL, 0), "#.00"),
+             neonCyan)
+
+    tableRow(statsTable, 13, "Status",
+             statusStr,
+             limitHit ? neonOrange : strategy.position_size != 0 ? neonCyan : neonGreen)
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  DAILY LIMIT BACKGROUND SHADING
+// ══════════════════════════════════════════════════════════════════════════════
+bgcolor(limitHit ? color.new(#ff2d9b, 93) : na, title="Limit-hit day shade")
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  CURRENT TRADE LEVELS (persistent plots while in a position)
+// ══════════════════════════════════════════════════════════════════════════════
+var float activeSL = na
+var float activeTP = na
+
+if longSignal
+    activeSL := longSL
+    activeTP := longTP
+else if shortSignal
+    activeSL := shortSL
+    activeTP := shortTP
+else if strategy.position_size == 0
+    activeSL := na
+    activeTP := na
+
+plot(strategy.position_size != 0 ? activeSL : na,
+     "Active Stop",   color=neonPink,  linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? activeTP : na,
+     "Active Target", color=neonGreen, linewidth=2, style=plot.style_linebr)
+plot(strategy.position_size != 0 ? strategy.position_avg_price : na,
+     "Entry Price",   color=colWhite,  linewidth=1, style=plot.style_linebr)
